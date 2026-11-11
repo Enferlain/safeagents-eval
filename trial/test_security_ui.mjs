@@ -229,7 +229,9 @@ test('chip tooltip uses native label and click toggles pane closed and open', ()
   const h = harness(); h.c.plugin.register(h.ctx);
   const chip = () => h.nodes(h.draw()).find(n => n.type === 'Button' && /^(Open|Close) Security$/.test(n.props['aria-label'] || ''));
   assert.equal(chip().props['aria-expanded'], true);
-  assert.match(h.nodes(h.draw()).find(n => n.type === 'Tip').props.label, /Close sidebar panel/);
+  const tooltip = () => h.nodes(h.draw()).find(n => n.type === 'Tip').props.label;
+  assert.equal(tooltip(), 'Security · Observing. Enforcement: Not enabled.');
+  assert.doesNotMatch(tooltip(), /(?:Open|Close) sidebar panel/);
   chip().props.onClick();
   assert.equal(h.values.paneVisible, false);
   assert.equal(h.ctx.entries.filter(e => e.area === 'panes').length, 0);
@@ -504,6 +506,31 @@ function visibleText(tree) {
   return visibleText(children);
 }
 
+test('status overview uses decorative native icons and state cues without coloring disabled enforcement as active', () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  h.data.status.judge = { state: 'available', model: { id: 'lite', label: 'D3 Lite' } };
+  const row = label => h.nodes(h.draw()).find(n => n.props['aria-label'] === label);
+  const overview = row('Status overview');
+  assert.ok(overview, 'a compact visual status group');
+  assert.match(overview.props.style.border, /var\(--ui-stroke-secondary\)/);
+  for (const [label, icon, value, color] of [
+    ['Observation status', 'eye', 'Observing', 'var(--ui-accent)'],
+    ['Enforcement status', 'shield', 'Not enabled', 'var(--ui-text-secondary)'],
+    ['Live judge', 'pulse', 'D3 Lite · Available', 'var(--ui-green)'],
+  ]) {
+    const current = row(label);
+    assert.ok(current, label);
+    assert.ok(h.nodes(current).some(n => n.type === 'Codicon' && n.props.name === icon && n.props['aria-hidden'] === true));
+    const cue = h.nodes(current).find(n => n.props['data-state-cue'] === value);
+    assert.ok(cue, value);
+    assert.equal(cue.props.style.background, color);
+    assert.equal(cue.props['aria-hidden'], true, 'text still carries status meaning');
+    assert.ok(visibleText(current).includes(value));
+  }
+  assert.match(visibleText(h.draw()), /Observation only · Hermes handles approvals/);
+  assert.doesNotMatch(visibleText(h.draw()), /Observation is not blocking\. Permissions stay/);
+});
+
 test('status summary uses quiet unboxed values with explicit observation and enforcement meanings', () => {
   const h = harness(); h.c.plugin.register(h.ctx); h.open();
   h.data.status.observation = { state: 'not_covered', provider: 'last-provider', detail: 'Provider routing diagnostic' };
@@ -527,7 +554,7 @@ test('status summary uses quiet unboxed values with explicit observation and enf
   assert.match(visibleText(diagnostics), /Connection refused diagnostic/);
   assert.match(visibleText(diagnostics), /Provider routing diagnostic/);
   assert.match(visibleText(diagnostics), /last-provider/);
-  assert.match(text, /Observation is not blocking/);
+  assert.match(text, /Observation only · Hermes handles approvals/);
   const grid = nodes.find(n => n.props?.['aria-label'] === 'Capture counts');
   assert.equal(grid.props.style.gridTemplateColumns, 'repeat(4, minmax(0, 1fr))');
 });
@@ -651,7 +678,9 @@ test('store health stays distinct from actual live judge identity and replay cho
   h.data.status.subsystems = { activity: { healthy: true, detail: 'Activity ready' }, review: { healthy: false, detail: 'Review damaged' }, replay: { healthy: true, detail: 'Replay records ready' } };
   h.data.status.judge = { state: 'available', model: { id: 'qev', label: 'QEV', model_file_sha256: 'a'.repeat(64), native_template_sha256: 'b'.repeat(64) }, threshold: 0.88, detail: 'Verified backend identity' };
   const tree = chooseReplay(h, 'lite'), text = visibleText(tree);
-  for (const label of ['Storage', '2 healthy', 'Review records: Unavailable', 'Live judge', 'QEV · Available']) assert.ok(text.includes(label), label);
+  for (const label of ['Storage', '2 healthy', 'Live judge', 'QEV · Available']) assert.ok(text.includes(label), label);
+  assert.match(text, /Review records\s+Unavailable/);
+  assert.ok(h.nodes(tree).some(n => n.props['aria-label'] === 'Review records: Unavailable'));
   assert.doesNotMatch(text, /Activity records: Healthy|Replay records: Healthy/);
   assert.doesNotMatch(text, /QEV: Healthy|QEV model healthy|D3 Lite · Available/);
   const live = h.nodes(tree).find(n => n.props['aria-label'] === 'Live judge');
@@ -777,6 +806,36 @@ test('inspection is an explicit capability independent of reviewability', () => 
   assert.equal(h.nodes(articles[1]).some(n => n.props.children === 'Inspect raw capture'), false);
 });
 
+test('health groups use icon headings and compact aligned component states while full names remain in diagnostics', () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  h.data.status.observation = { state: 'not_covered' };
+  h.data.status.components = [
+    { id: 'proxy_glm', label: 'GLM observation proxy', healthy: false },
+    { id: 'decision', label: 'Local decision model', healthy: false },
+    { id: 'store', label: 'Private capture store', healthy: true },
+  ];
+  const tree = h.draw();
+  for (const [group, icon] of [['Route unconfirmed', 'git-branch'], ['Storage', 'database']]) {
+    const element = h.nodes(tree).find(n => n.props['aria-label'] === group);
+    assert.ok(h.nodes(element).some(n => n.type === 'Codicon' && n.props.name === icon && n.props['aria-hidden'] === true), group);
+  }
+  for (const [name, shortName] of [['GLM observation proxy', 'GLM proxy'], ['Local decision model', 'Decision model']]) {
+    const row = h.nodes(tree).find(n => n.props['aria-label'] === `${name}: Unavailable`);
+    assert.ok(row, name);
+    assert.equal(row.props.style.display, 'grid');
+    assert.equal(row.props.style.gridTemplateColumns, 'minmax(0, 1fr) auto');
+    assert.match(visibleText(row), new RegExp(shortName));
+    const cue = h.nodes(row).find(n => n.props['data-state-cue'] === 'Unavailable');
+    assert.equal(cue.props.style.background, 'var(--ui-yellow)');
+  }
+  const storage = h.nodes(tree).find(n => n.props['aria-label'] === 'Storage');
+  assert.match(visibleText(storage), /1 healthy/);
+  const diagnostics = h.nodes(tree).find(n => n.type === 'details' && visibleText(n) === 'Diagnostics');
+  diagnostics.props.open = true;
+  assert.match(visibleText(diagnostics), /GLM observation proxy: Unavailable/);
+  assert.match(visibleText(diagnostics), /Local decision model: Unavailable/);
+});
+
 test('health summary counts healthy components and keeps every component state and detail in diagnostics', () => {
   const h = harness(); h.c.plugin.register(h.ctx);
   h.data.status.components = [
@@ -788,7 +847,7 @@ test('health summary counts healthy components and keeps every component state a
   const health = h.nodes(tree).find(n => n.props['aria-label'] === 'Health summary');
   assert.ok(health);
   assert.match(visibleText(health), /1 healthy/);
-  assert.match(text, /Observation adapter: Unavailable/);
+  assert.match(text, /Capture adapter\s+Unavailable/);
   assert.doesNotMatch(text, /Local decision model: Healthy|Private capture store: Healthy|diagnostic/);
   const diagnostics = h.nodes(tree).find(n => n.type === 'details' && visibleText(n) === 'Diagnostics');
   diagnostics.props.open = true;
@@ -808,11 +867,11 @@ test('only fresh observing or degraded route evidence separates the other proxy 
   let tree = h.draw();
   assert.match(visibleText(group(tree, 'Observed route')), /3 healthy/);
   assert.doesNotMatch(visibleText(group(tree, 'Observed route')), /Unavailable/);
-  assert.match(visibleText(group(tree, 'Other route')), /Local observation proxy: Unavailable/);
+  assert.match(visibleText(group(tree, 'Other route')), /Local proxy\s+Unavailable/);
   assert.equal(h.c.coverageView(h.data.status, null).label, 'Observing');
   h.data.status.observation = { state: 'degraded', provider: 'safeagents-local' };
   tree = h.draw();
-  assert.match(visibleText(group(tree, 'Observed route')), /Local observation proxy: Unavailable/);
+  assert.match(visibleText(group(tree, 'Observed route')), /Local proxy\s+Unavailable/);
   assert.match(visibleText(group(tree, 'Other route')), /1 healthy/);
   assert.equal(h.c.coverageView(h.data.status, null).label, 'Degraded');
   for (const state of ['unknown', 'not_covered']) {
@@ -820,7 +879,7 @@ test('only fresh observing or degraded route evidence separates the other proxy 
     tree = h.draw();
     assert.equal(group(tree, 'Observed route'), undefined);
     assert.equal(group(tree, 'Other route'), undefined);
-    assert.match(visibleText(group(tree, 'Route unconfirmed')), /Local observation proxy: Unavailable/);
+    assert.match(visibleText(group(tree, 'Route unconfirmed')), /Local proxy\s+Unavailable/);
   }
   for (const provider of [null, 'unrecognized-provider', 'constructor', '__proto__']) {
     h.data.status.observation = { state: 'degraded', provider };
@@ -839,20 +898,20 @@ test('missing, stale and failed health reads remain distinct without healthy cou
   h.data.status.components = [{ id: 'proxy_glm', label: 'GLM observation proxy', healthy: true, detail: 'TCP only' }];
   const healthText = tree => visibleText(h.nodes(tree).find(n => n.props['aria-label'] === 'Health summary'));
   let tree = h.draw();
-  assert.match(healthText(tree), /Observation adapter: Unknown/);
-  assert.match(healthText(tree), /Private capture store: Unknown/);
-  assert.match(healthText(tree), /Review records: Unknown/);
-  assert.match(healthText(tree), /Other route.*Local observation proxy: Unknown/);
+  assert.match(healthText(tree), /Capture adapter\s+Unknown/);
+  assert.match(healthText(tree), /Private captures\s+Unknown/);
+  assert.match(healthText(tree), /Review records\s+Unknown/);
+  assert.match(healthText(tree), /Other route.*Local proxy\s+Unknown/);
   h.data.status.observed_at = 0;
   tree = h.draw();
-  assert.match(healthText(tree), /GLM observation proxy: Unknown \(stale\)/);
+  assert.match(healthText(tree), /GLM proxy\s+Unknown \(stale\)/);
   assert.doesNotMatch(healthText(tree), /healthy|Observed route|Other route/);
   const diagnostics = h.nodes(tree).find(n => n.type === 'details' && visibleText(n) === 'Diagnostics');
   diagnostics.props.open = true;
   assert.match(visibleText(diagnostics), /GLM observation proxy: Unknown \(stale\).*Last recorded: Healthy.*TCP only/);
   h.errors.status = new Error('offline');
   tree = h.draw();
-  assert.match(healthText(tree), /GLM observation proxy: Unknown \(request failed\)/);
+  assert.match(healthText(tree), /GLM proxy\s+Unknown \(request failed\)/);
   assert.doesNotMatch(healthText(tree), /healthy|Observed route|Other route/);
 });
 

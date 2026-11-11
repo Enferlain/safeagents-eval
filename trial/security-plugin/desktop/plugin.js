@@ -118,6 +118,22 @@ const summary = { ...muted, cursor: 'pointer', padding: '5px 0', fontSize: 11 };
 const flow = { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, minWidth: 0 };
 const compactButton = { maxWidth: '100%', height: 'auto', minHeight: 24, padding: '3px 6px', fontSize: 11, whiteSpace: 'normal', textAlign: 'left' };
 
+function stateColor(value) {
+  if (value === 'Healthy' || value.endsWith(' · Available')) return 'var(--ui-green)';
+  if (value === 'Observing') return 'var(--ui-accent)';
+  if (/unavailable|degraded|stale|failed|mismatch/i.test(value)) return 'var(--ui-yellow)';
+  return 'var(--ui-text-secondary)';
+}
+function stateCue(value) {
+  return jsx('span', { 'aria-hidden': true, 'data-state-cue': value, style: { width: 5, height: 5, borderRadius: '50%', flexShrink: 0, background: stateColor(value) } });
+}
+function statusLine(label, value, icon, ariaLabel = `${label} status`) {
+  return jsxs('div', { 'aria-label': ariaLabel, style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', alignItems: 'center', gap: 8, padding: '5px 0' }, children: [
+    jsxs('span', { style: { ...flow, ...muted, flexWrap: 'nowrap', gap: 7, fontSize: 11 }, children: [jsx(Codicon, { name: icon, size: 13, 'aria-hidden': true, style: { flexShrink: 0, opacity: 0.75 } }), jsx('span', { children: label })] }),
+    jsxs('span', { style: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 5, minWidth: 0 }, children: [stateCue(value), jsx('span', { style: { ...stateValue, color: stateColor(value), textAlign: 'right' }, children: value })] }),
+  ] }, label);
+}
+
 function definitions(entries) {
   return jsx('dl', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 84px) minmax(0, 1fr)', gap: '4px 8px', margin: '6px 0', fontSize: 11 }, children: entries.flatMap(([label, value]) => [
     jsx('dt', { style: muted, children: `${label}:` }, `${label}:label`),
@@ -191,7 +207,7 @@ function SecurityChip({ ctx, togglePane }) {
   const status = useResource(ctx, scope, 'status', `/status?session_id=${encodeURIComponent(scope[2] || '')}`);
   const view = coverageView(status.data, status.error, Date.now(), scopeReason(scope));
   return jsx(Tip, {
-    label: `Security · ${view.label}. Enforcement: ${view.enforcement}. ${visible ? 'Close' : 'Open'} sidebar panel.`,
+    label: `Security · ${view.label}. Enforcement: ${view.enforcement}.`,
     children: jsx(Button, { variant: 'ghost', size: 'sm', 'aria-label': `${visible ? 'Close' : 'Open'} Security`, 'aria-expanded': visible,
       style: { width: 24, minWidth: 24, height: 22, padding: 0, color: view.healthy ? 'var(--ui-accent)' : 'var(--ui-text-secondary)' },
       onClick: togglePane,
@@ -313,16 +329,29 @@ function SecurityPanel({ ctx, scope, status }) {
       jsx('span', { 'aria-label': 'Current session identifier', title: session || 'No focused stored session', style: { fontSize: 11, overflowWrap: 'anywhere' }, children: session ? (session.length > 12 ? `${session.slice(0, 12)}…` : session) : 'None selected' }),
     ] }),
     jsx('h3', { style: heading, children: 'Status' }),
-    ...[['Observation', view.label], ['Enforcement', view.enforcement]].map(([label, value]) => jsxs('div', { style: { ...flow, justifyContent: 'space-between', marginBottom: 5 }, children: [jsx('span', { style: muted, children: label }), jsx('span', { style: stateValue, children: value })] }, label)),
-    jsxs('div', { 'aria-label': 'Live judge', style: { ...flow, justifyContent: 'space-between', marginBottom: 5 }, children: [jsx('span', { style: muted, children: 'Live judge' }), jsx('span', { style: stateValue, children: judgeLabel })] }),
-    jsx('p', { style: { ...muted, fontSize: 11, margin: '6px 0' }, children: 'Observation is not blocking. Permissions stay in Hermes approval cards.' }),
+    jsxs('div', { 'aria-label': 'Status overview', style: { border: '1px solid var(--ui-stroke-secondary)', borderRadius: 7, padding: '3px 9px', background: 'color-mix(in srgb, var(--ui-text-primary) 2%, transparent)' }, children: [
+      statusLine('Observation', view.label, 'eye'),
+      statusLine('Enforcement', view.enforcement, 'shield'),
+      statusLine('Live judge', judgeLabel, 'pulse', 'Live judge'),
+    ] }),
+    jsx('p', { style: { ...muted, fontSize: 10, margin: '7px 0' }, children: 'Observation only · Hermes handles approvals.' }),
     scopeReason(scope) ? jsx('p', { children: scopeReason(scope) }) : null,
     status.error ? jsx('div', { role: 'alert', children: `Coverage request failed: ${status.error.message || status.error}` }) : null,
-    jsx('div', { 'aria-label': 'Health summary', style: { fontSize: 11, padding: '4px 0' }, children: healthGroups(components, status.data?.observation, status.error, view.stale).map(group => {
+    jsx('div', { 'aria-label': 'Health summary', style: { fontSize: 11, marginTop: 8 }, children: healthGroups(components, status.data?.observation, status.error, view.stale).map(group => {
       const healthy = group.components.filter(component => componentState(component, status.error, view.stale) === 'Healthy').length;
-      return jsxs('div', { 'aria-label': group.label, style: { padding: '2px 0' }, children: [
-        jsx('span', { style: muted, children: `${group.label}${healthy ? ` · ${healthy} healthy` : ''}` }),
-        ...group.components.filter(component => componentState(component, status.error, view.stale) !== 'Healthy').map(component => jsx('div', { children: `${component.label}: ${componentState(component, status.error, view.stale)}` }, component.id)),
+      const names = { proxy_glm: 'GLM proxy', proxy_local: 'Local proxy', decision: 'Decision model', capture: 'Capture adapter', store: 'Private captures', activity: 'Activity records', review: 'Review records', replay: 'Replay records' };
+      return jsxs('div', { 'aria-label': group.label, style: { padding: '7px 0', borderTop: '1px solid var(--ui-stroke-secondary)' }, children: [
+        jsxs('div', { style: { ...flow, justifyContent: 'space-between', gap: 6, marginBottom: 3 }, children: [
+          jsxs('span', { style: { ...flow, ...muted, gap: 6, fontWeight: 500, fontSize: 10 }, children: [jsx(Codicon, { name: group.label === 'Storage' ? 'database' : group.label === 'Components' ? 'server' : 'git-branch', size: 12, 'aria-hidden': true }), jsx('span', { children: group.label })] }),
+          healthy ? jsx('span', { style: { color: 'var(--ui-green)', fontSize: 10 }, children: `${healthy} healthy` }) : null,
+        ] }),
+        ...group.components.filter(component => componentState(component, status.error, view.stale) !== 'Healthy').map(component => {
+          const value = componentState(component, status.error, view.stale);
+          return jsxs('div', { 'aria-label': `${component.label}: ${value}`, title: `${component.label}: ${value}`, style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: 8, alignItems: 'center', padding: '3px 0 3px 18px' }, children: [
+            jsx('span', { style: { ...muted, minWidth: 0, overflowWrap: 'anywhere' }, children: Object.hasOwn(names, component.id) ? names[component.id] : component.label }),
+            jsxs('span', { style: { display: 'flex', alignItems: 'center', gap: 5, maxWidth: 110, textAlign: 'right', color: stateColor(value), fontSize: 10 }, children: [stateCue(value), jsx('span', { children: value })] }),
+          ] }, component.id);
+        }),
       ] }, group.label);
     }) }),
     jsxs('details', { children: [jsx('summary', { style: summary, children: 'Diagnostics' }),

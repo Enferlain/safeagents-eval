@@ -16,6 +16,7 @@ All notable changes are recorded here. This project follows the [Keep a Changelo
 
 ### Changed
 
+- Security Status adds native icons, theme-aware state dots, compact aligned component rows and a shorter permissions note. Full component names remain in Diagnostics; the chip tooltip no longer repeats open/close instructions.
 - Security sidebar now uses quiet Status values, grouped component-health summaries, one Activity section, readable event metadata, explicit unknown counts, distinct raw inspection and action-local errors. Full timestamps, visible Replay controls and existing observation/permission boundaries are preserved.
 - Git publication now uses an allowlist: private observations, local environments, downloaded benchmark bundles, generated artifacts and unreviewed workspace paths remain local.
 
