@@ -37,6 +37,16 @@ function modelLabel(model) {
 function eventScores(event) {
   return Array.isArray(event.scores) ? event.scores.filter(score => score && typeof score === 'object' && !Array.isArray(score)) : [];
 }
+function sourceLabel(source) {
+  const labels = { hermes: 'Hermes lifecycle', safeagents: 'SafeAgents', proxy: 'Proxy capture', replay: 'Replay' };
+  return Object.hasOwn(labels, source) ? labels[source] : source;
+}
+function scoreAbsence(row) {
+  if (row.events.some(event => Object.hasOwn(event, 'lite_score') || Object.hasOwn(event, 'qev_score'))) return 'Unknown model · score provenance unavailable';
+  const nativeOnly = row.events.every(event => event.source === 'hermes' && event.reviewable === false && event.inspectable !== true
+    && (event.scores === undefined || (Array.isArray(event.scores) && event.scores.length === 0)));
+  return nativeOnly ? null : 'No model scores recorded';
+}
 function scoreSummary(score) {
   const role = score.role === 'live' ? 'Live' : score.role === 'replay' ? 'Replay' : 'Unknown role';
   const failed = score.error === true;
@@ -50,6 +60,32 @@ function liveJudgeLabel(judge, error, stale) {
   if (judge?.state === 'mismatch') return 'Unknown model · identity mismatch';
   const label = modelLabel(judge?.model);
   return judge?.state === 'available' && label !== 'Unknown model' ? `${label} · Available` : 'Unknown model';
+}
+function healthComponents(status) {
+  const labels = { proxy_glm: 'GLM observation proxy', proxy_local: 'Local observation proxy', decision: 'Local decision model', capture: 'Observation adapter', store: 'Private capture store', activity: 'Activity records', review: 'Review records', replay: 'Replay records' };
+  const components = [...(Array.isArray(status?.components) ? status.components : []),
+    ...Object.entries(status?.subsystems || {}).map(([id, value]) => ({ ...value, id, label: labels[id] || id }))];
+  for (const [id, label] of Object.entries(labels)) if (!components.some(component => component.id === id)) components.push({ id, label });
+  return components.map(component => ({ ...component, label: component.label || labels[component.id] || component.id }));
+}
+function componentState(component, error, stale) {
+  return error ? 'Unknown (request failed)' : stale ? 'Unknown (stale)' : component.healthy === true ? 'Healthy' : component.healthy === false ? 'Unavailable' : 'Unknown';
+}
+function healthGroups(components, observation, error, stale) {
+  const storage = component => ['store', 'activity', 'review', 'replay'].includes(component.id);
+  const routeIds = ['proxy_glm', 'proxy_local', 'decision', 'capture'];
+  // Only these backend states represent fresh native route evidence. Provider
+  // alone can be a stale or database-only last-recorded value, not a live route.
+  const proxy = !error && !stale && ['observing', 'degraded'].includes(observation?.state)
+    ? observation.provider === 'safeagents-glm' ? 'proxy_glm' : observation.provider === 'safeagents-local' ? 'proxy_local' : null : null;
+  return [
+    ...(proxy ? [
+      { label: 'Observed route', components: components.filter(component => [proxy, 'decision', 'capture'].includes(component.id)) },
+      { label: 'Other route', components: components.filter(component => ['proxy_glm', 'proxy_local'].includes(component.id) && component.id !== proxy) },
+    ] : [{ label: 'Route unconfirmed', components: components.filter(component => routeIds.includes(component.id)) }]),
+    { label: 'Components', components: components.filter(component => !storage(component) && !routeIds.includes(component.id)) },
+    { label: 'Storage', components: components.filter(storage) },
+  ].filter(group => group.components.length);
 }
 function resourceValid(resource, value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -77,10 +113,17 @@ const muted = { color: 'var(--ui-text-secondary)' };
 const block = { padding: '10px 0', borderTop: '1px solid var(--ui-stroke-secondary)', minWidth: 0 };
 // Match LLM Usage's quiet tracked headings and native rail's compact metadata.
 const heading = { margin: '0 0 6px', fontSize: 10, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--ui-text-secondary)' };
-const badge = { padding: '3px 6px', borderRadius: 3, background: 'color-mix(in srgb, var(--ui-text-primary) 5%, transparent)', border: '1px solid var(--ui-stroke-secondary)', fontSize: 11, fontWeight: 500, overflowWrap: 'anywhere' };
+const stateValue = { fontSize: 11, fontWeight: 500, overflowWrap: 'anywhere' };
 const summary = { ...muted, cursor: 'pointer', padding: '5px 0', fontSize: 11 };
 const flow = { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, minWidth: 0 };
 const compactButton = { maxWidth: '100%', height: 'auto', minHeight: 24, padding: '3px 6px', fontSize: 11, whiteSpace: 'normal', textAlign: 'left' };
+
+function definitions(entries) {
+  return jsx('dl', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 84px) minmax(0, 1fr)', gap: '4px 8px', margin: '6px 0', fontSize: 11 }, children: entries.flatMap(([label, value]) => [
+    jsx('dt', { style: muted, children: `${label}:` }, `${label}:label`),
+    jsx('dd', { style: { margin: 0, minWidth: 0, overflowWrap: 'anywhere', whiteSpace: 'pre-wrap', userSelect: 'text' }, children: value }, `${label}:value`),
+  ]) });
+}
 
 function ownerPair(value) {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -173,13 +216,16 @@ function SecurityPanel({ ctx, scope, status }) {
   const [allSessions, setAllSessions] = useState(false);
   const [includeProbes, setIncludeProbes] = useState(false);
   const [raw, setRaw] = useState(null);
-  const [busy, setBusy] = useState(null);
-  const [actionError, setActionError] = useState('');
+  const [busy, updateBusy] = useState(null);
+  const busyAction = useRef(null);
+  const [eventErrors, setEventErrors] = useState({});
+  const [replayError, setReplayError] = useState('');
   const [replayModel, setReplayModel] = useState('');
   const [startingReplay, setStartingReplay] = useState(null);
   const replayPending = useRef(false);
   const alive = useRef(true);
   const ticket = useRef(0);
+  const actionEpoch = useRef(0);
   useEffect(() => { alive.current = true; return () => { alive.current = false; ticket.current++; }; }, []);
   const session = scope[2];
   const params = new URLSearchParams({ session_id: session || '', all_sessions: String(allSessions), include_probes: String(includeProbes), limit: '50' });
@@ -203,28 +249,43 @@ function SecurityPanel({ ctx, scope, status }) {
       : fresh.reviewable !== false && subsystems?.review?.healthy !== false);
   }
   const activityFailed = !!events.error || events.data?.subsystems?.activity?.healthy === false || status.data?.subsystems?.activity?.healthy === false;
-  useEffect(() => { if (activityFailed || status.error) { ticket.current++; setRaw(null); setBusy(null); } }, [activityFailed, status.error]);
+  const statusUnavailable = !!status.error || !status.data || coverageView(status.data, null).stale;
+  useEffect(() => { if (activityFailed || statusUnavailable) resetActivity(); }, [activityFailed, statusUnavailable]);
+  function setEventError(id, kind, message) {
+    setEventErrors(previous => ({ ...previous, [id]: { ...previous[id], [kind]: message } }));
+  }
+  function setBusy(value) {
+    busyAction.current = value; updateBusy(value);
+  }
+  function resetActivity() {
+    ticket.current++; actionEpoch.current++; setRaw(null); setBusy(replayPending.current ? 'replay' : null); setEventErrors({}); setReplayError('');
+  }
+  function actionCurrent(epoch) {
+    return alive.current && sameScope(scope) && actionEpoch.current === epoch;
+  }
   async function label(event, value) {
-    if (!ready('review', event)) return;
-    setBusy(event.id); setActionError('');
+    if (busyAction.current !== null || !ready('review', event)) return;
+    const epoch = actionEpoch.current;
+    setBusy(event.id); setEventError(event.id, 'review', '');
     try {
       const result = await ctx.rest('/label', { method: 'POST', body: { id: event.id, value } });
       if (result?.success === false) throw new Error('Review was not saved');
-      if (alive.current && sameScope(scope)) await events.refetch();
-    } catch (error) { if (alive.current && sameScope(scope)) setActionError(`Review failed: ${error.message || error}`); }
-    finally { if (alive.current && sameScope(scope)) setBusy(null); }
+      if (actionCurrent(epoch)) await events.refetch();
+    } catch (error) { if (actionCurrent(epoch)) setEventError(event.id, 'review', `Review failed: ${error.message || error}`); }
+    finally { if (actionCurrent(epoch)) setBusy(null); }
   }
   async function runPending() {
-    if (!ready('replay')) return;
+    if (busyAction.current !== null || !ready('replay')) return;
+    const epoch = actionEpoch.current;
     const selected = latest.current.replay.data.models.find(model => model.id === latest.current.replayModel);
     const model = selected.id;
     replayPending.current = true;
     setStartingReplay({ id: model, label: selected.label });
-    setBusy('replay'); setActionError('');
+    setBusy('replay'); setReplayError('');
     try {
       await ctx.rest('/replay', { method: 'POST', body: { model } });
       if (alive.current && sameScope(scope)) await replay.refetch();
-    } catch (error) { if (alive.current && sameScope(scope)) setActionError(`Replay start failed: ${error.message || error}`); }
+    } catch (error) { if (actionCurrent(epoch)) setReplayError(`Replay start failed: ${error.message || error}`); }
     finally {
       replayPending.current = false;
       if (alive.current && sameScope(scope)) { setStartingReplay(null); setBusy(null); }
@@ -235,16 +296,15 @@ function SecurityPanel({ ctx, scope, status }) {
   const hasReplayJob = !!startingReplay || replay.data?.model != null || replay.data?.state === 'running';
   const judgeLabel = liveJudgeLabel(status.data?.judge, status.error, view.stale);
   const rows = activityRows(events.data?.events, session, allSessions, includeProbes);
-  const components = [...(Array.isArray(status.data?.components) ? status.data.components : []),
-    ...Object.entries(status.data?.subsystems || {}).map(([id, value]) => ({ ...value, id, label: { activity: 'Activity records', review: 'Review records', replay: 'Replay records' }[id] || id }))];
+  const components = healthComponents(status.data);
   async function inspect(event) {
-    if (!ready('inspect', event)) return;
+    if (busyAction.current !== null || !ready('inspect', event)) return;
     const request = ++ticket.current;
-    setRaw(null); setBusy(event.id); setActionError('');
+    setRaw(null); setBusy(event.id); setEventError(event.id, 'inspect', '');
     try {
       const capture = await ctx.rest('/inspect', { method: 'POST', body: { id: event.id, include_content: true } });
       if (ready('inspect', event) && ticket.current === request) setRaw({ id: event.id, ...rawView(capture) });
-    } catch (error) { if (alive.current && sameScope(scope) && ticket.current === request) setActionError(`Inspect failed: ${error.message || error}`); }
+    } catch (error) { if (alive.current && sameScope(scope) && ticket.current === request) setEventError(event.id, 'inspect', `Inspect failed: ${error.message || error}`); }
     finally { if (alive.current && sameScope(scope) && ticket.current === request) setBusy(null); }
   }
   return jsxs('section', { 'aria-label': 'Security', style: { minWidth: 0, lineHeight: 1.45, overflowWrap: 'anywhere' }, children: [
@@ -252,47 +312,50 @@ function SecurityPanel({ ctx, scope, status }) {
       jsx('span', { style: muted, children: 'Session' }),
       jsx('span', { 'aria-label': 'Current session identifier', title: session || 'No focused stored session', style: { fontSize: 11, overflowWrap: 'anywhere' }, children: session ? (session.length > 12 ? `${session.slice(0, 12)}…` : session) : 'None selected' }),
     ] }),
-    jsx('h3', { style: heading, children: 'Coverage' }),
-    ...[['Observation', view.label], ['Enforcement', view.enforcement]].map(([label, value]) => jsxs('div', { style: { ...flow, justifyContent: 'space-between', marginBottom: 5 }, children: [jsx('span', { style: muted, children: label }), jsx('span', { style: badge, children: value })] }, label)),
-    jsxs('div', { 'aria-label': 'Live judge', style: { ...flow, justifyContent: 'space-between', marginBottom: 5 }, children: [jsx('span', { style: muted, children: 'Live judge' }), jsx('span', { style: badge, children: judgeLabel })] }),
+    jsx('h3', { style: heading, children: 'Status' }),
+    ...[['Observation', view.label], ['Enforcement', view.enforcement]].map(([label, value]) => jsxs('div', { style: { ...flow, justifyContent: 'space-between', marginBottom: 5 }, children: [jsx('span', { style: muted, children: label }), jsx('span', { style: stateValue, children: value })] }, label)),
+    jsxs('div', { 'aria-label': 'Live judge', style: { ...flow, justifyContent: 'space-between', marginBottom: 5 }, children: [jsx('span', { style: muted, children: 'Live judge' }), jsx('span', { style: stateValue, children: judgeLabel })] }),
     jsx('p', { style: { ...muted, fontSize: 11, margin: '6px 0' }, children: 'Observation is not blocking. Permissions stay in Hermes approval cards.' }),
     scopeReason(scope) ? jsx('p', { children: scopeReason(scope) }) : null,
     status.error ? jsx('div', { role: 'alert', children: `Coverage request failed: ${status.error.message || status.error}` }) : null,
-    jsx('div', { style: { ...flow, gap: '4px 10px', padding: '4px 0' }, children: components.map(component => jsxs('span', { style: { ...flow, fontSize: 11 }, children: [
-      jsx('span', { 'aria-hidden': true, style: { width: 5, height: 5, borderRadius: '50%', background: status.error || view.stale || component.healthy == null ? 'var(--ui-text-secondary)' : component.healthy ? 'var(--ui-green)' : 'var(--ui-red)' } }),
-      `${component.label}: ${status.error || view.stale ? 'Unknown (stale)' : component.healthy === true ? 'Healthy' : component.healthy === false ? 'Unavailable' : 'Unknown'}`,
-    ] }, component.id)) }),
+    jsx('div', { 'aria-label': 'Health summary', style: { fontSize: 11, padding: '4px 0' }, children: healthGroups(components, status.data?.observation, status.error, view.stale).map(group => {
+      const healthy = group.components.filter(component => componentState(component, status.error, view.stale) === 'Healthy').length;
+      return jsxs('div', { 'aria-label': group.label, style: { padding: '2px 0' }, children: [
+        jsx('span', { style: muted, children: `${group.label}${healthy ? ` · ${healthy} healthy` : ''}` }),
+        ...group.components.filter(component => componentState(component, status.error, view.stale) !== 'Healthy').map(component => jsx('div', { children: `${component.label}: ${componentState(component, status.error, view.stale)}` }, component.id)),
+      ] }, group.label);
+    }) }),
     jsxs('details', { children: [jsx('summary', { style: summary, children: 'Diagnostics' }),
       jsx('div', { style: muted, children: status.data?.observation?.detail || '' }),
       jsx('div', { style: muted, children: `Last-recorded provider: ${status.data?.observation?.provider || 'Unknown'}` }),
       jsx('div', { style: muted, children: `Last checked: ${view.checked}${view.stale ? ' · stale / unavailable' : ''}` }),
       jsx('div', { style: muted, children: `Live judge: ${status.data?.judge?.detail || 'No verified model identity recorded'}` }),
       Number.isFinite(status.data?.judge?.threshold) ? jsx('div', { style: muted, children: `Live judge threshold: ${status.data.judge.threshold} · provisional` }) : null,
-      ...components.map(component => jsx('div', { style: muted, children: `${component.label}: ${component.detail || 'No diagnostics recorded'}` }, component.id)),
+      ...components.map(component => jsx('div', { style: muted, children: `${component.label}: ${componentState(component, status.error, view.stale)}${status.error || view.stale ? ` · Last recorded: ${componentState(component, null, false)}` : ''} · ${component.detail || 'No diagnostics recorded'}` }, component.id)),
       jsx('p', { style: muted, children: 'This panel adds no permission system.' }),
     ] }),
-    jsx('div', { 'aria-label': 'Capture counts', style: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 4, padding: '8px 0' }, children: [['Traffic', 'traffic_captures'], ['Verification', 'verification_captures'], ['Replay', 'replay_attempts'], ['Reviews', 'label_events']].map(([label, key]) => jsxs('div', { style: { minWidth: 0 }, children: [jsx('div', { style: { fontSize: 16, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }, children: (key === 'label_events' && Object.hasOwn(status.data?.counts || {}, 'reviewed_events') ? status.data.counts.reviewed_events : status.data?.counts?.[key]) ?? '—' }), jsx('div', { style: { ...muted, fontSize: 10, overflowWrap: 'anywhere' }, children: label })] }, key)) }),
+    jsx('div', { 'aria-label': 'Capture counts', style: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 4, padding: '8px 0' }, children: [['Traffic', 'traffic_captures'], ['Verification', 'verification_captures'], ['Replay', 'replay_attempts'], ['Reviews', 'label_events']].map(([label, key]) => jsxs('div', { style: { minWidth: 0 }, children: [jsx('div', { style: { fontSize: 16, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }, children: (key === 'label_events' && Object.hasOwn(status.data?.counts || {}, 'reviewed_events') ? status.data.counts.reviewed_events : status.data?.counts?.[key]) ?? 'Unknown' }), jsx('div', { style: { ...muted, fontSize: 10, overflowWrap: 'anywhere' }, children: label })] }, key)) }),
     jsxs('div', { style: block, children: [
-      jsx('h3', { style: heading, children: 'Activity scope' }),
-      jsx('label', { style: { display: 'block' }, children: jsx('select', { disabled: !allowedScope(scope), 'aria-label': 'Activity scope', style: { width: '100%', maxWidth: '100%', minWidth: 0, padding: '4px 6px', borderRadius: 3, font: 'inherit', color: 'var(--ui-text-primary)', background: 'var(--ui-bg-input)', border: '1px solid var(--ui-stroke-secondary)' }, value: allSessions ? 'all' : 'current', onChange: e => { ticket.current++; setRaw(null); setBusy(null); setAllSessions(e.target.value === 'all'); }, children: [jsx('option', { value: 'current', children: 'Current session' }), jsx('option', { value: 'all', children: 'All sessions' })] }) }),
-      jsxs('label', { style: { ...flow, marginTop: 6, fontSize: 11 }, children: [jsx('input', { style: { accentColor: 'var(--ui-accent)', margin: 0 }, type: 'checkbox', disabled: !allowedScope(scope), checked: includeProbes, onChange: e => { ticket.current++; setRaw(null); setBusy(null); setIncludeProbes(e.target.checked); } }), ' Include verification traffic'] }),
-      jsxs('details', { children: [jsx('summary', { style: summary, children: `${events.data?.unassociated_count ?? '—'} unassociated · scope notes` }), jsx('div', { style: { ...muted, fontSize: 11 }, children: 'Unassociated captures appear in All sessions only. Up to 50 recent events; totals may cover a wider window.' })] }),
+      jsx('h3', { style: heading, children: 'Activity' }),
+      jsx('label', { style: { display: 'block' }, children: jsx('select', { disabled: !allowedScope(scope), 'aria-label': 'Activity scope', style: { width: '100%', maxWidth: '100%', minWidth: 0, padding: '4px 6px', borderRadius: 3, font: 'inherit', color: 'var(--ui-text-primary)', background: 'var(--ui-bg-input)', border: '1px solid var(--ui-stroke-secondary)' }, value: allSessions ? 'all' : 'current', onChange: e => { resetActivity(); setAllSessions(e.target.value === 'all'); }, children: [jsx('option', { value: 'current', children: 'Current session' }), jsx('option', { value: 'all', children: 'All sessions' })] }) }),
+      jsxs('label', { style: { ...flow, marginTop: 6, fontSize: 11 }, children: [jsx('input', { style: { accentColor: 'var(--ui-accent)', margin: 0 }, type: 'checkbox', disabled: !allowedScope(scope), checked: includeProbes, onChange: e => { resetActivity(); setIncludeProbes(e.target.checked); } }), ' Include verification traffic'] }),
+      jsxs('details', { children: [jsx('summary', { style: summary, children: `${events.data?.unassociated_count ?? 'Unknown'} events without a session · scope notes` }), jsx('div', { style: { ...muted, fontSize: 11 }, children: 'Events without a session appear in All sessions only. Up to 50 recent events; totals may cover a wider window.' })] }),
     ] }),
-    jsx('h3', { style: { ...heading, paddingTop: 8 }, children: 'Activity' }),
+
     events.error ? jsx('div', { role: 'alert', children: `Activity request failed: ${events.error.message || events.error}` }) : !events.data ? jsx('p', { children: 'Loading activity…' }) : !rows.length ? jsx('p', { children: !allSessions && !session ? 'Select a session or choose All sessions.' : 'No activity in this scope.' }) : null,
     ...rows.map(row => jsx('article', { style: block, children: [
       jsxs('div', { style: { ...flow, justifyContent: 'space-between' }, children: [
         jsx('strong', { style: { minWidth: 0, overflowWrap: 'anywhere', fontWeight: 600 }, children: row.events[0].tool || 'Captured call' }),
         jsx('span', { style: { ...muted, fontSize: 10 }, children: displayTime(row.events[0].time) }),
       ] }),
-      jsx('div', { style: { ...muted, fontSize: 11, marginTop: 3 }, children: row.sources.join(' · ') || 'Source unknown' }),
-      jsx('div', { style: { fontVariantNumeric: 'tabular-nums', margin: '4px 0' }, children: row.scores.length ? row.scores.map((score, index) => jsx('div', { children: scoreSummary(score) }, index)) : row.events.some(event => Object.hasOwn(event, 'lite_score') || Object.hasOwn(event, 'qev_score')) ? 'Unknown model · score provenance unavailable' : 'No model scores recorded' }),
+      jsx('div', { style: { ...muted, fontSize: 11, marginTop: 3 }, children: row.sources.map(sourceLabel).join(' · ') || 'Source unknown' }),
+      row.scores.length || scoreAbsence(row) ? jsx('div', { style: { fontVariantNumeric: 'tabular-nums', margin: '4px 0' }, children: row.scores.length ? row.scores.map((score, index) => jsx('div', { children: scoreSummary(score) }, index)) : scoreAbsence(row) }) : null,
       jsx('div', { style: { fontSize: 11 }, children: row.execution === 'Tool returned' ? 'Tool returned · effects unverified' : row.execution }),
       jsxs('details', { children: [
         jsx('summary', { style: summary, children: row.reviewable.length ? 'Details & review' : 'Details' }),
-        jsx('div', { style: muted, children: `Session: ${row.events[0].session_id || 'Unassociated'} · Turn: ${row.events[0].turn_id || 'Unknown'} · Tool call: ${row.events[0].tool_call_id || 'Unknown'} · API request: ${row.events[0].api_request_id || 'Unknown'}` }),
-        jsx('div', { style: muted, children: `Recorded status: ${[...new Set(row.events.map(e => e.status).filter(Boolean))].join(', ') || 'unknown'}` }),
-        ...row.events.map((event, index) => jsxs('div', { style: { paddingTop: 6 }, children: [
+        definitions([['Session', row.events[0].session_id || 'Without a session'], ['Turn', row.events[0].turn_id || 'Unknown'], ['Tool call', row.events[0].tool_call_id || 'Unknown'], ['API request', row.events[0].api_request_id || 'Unknown'], ['Recorded status', [...new Set(row.events.map(e => e.status).filter(Boolean))].join(', ') || 'unknown']]),
+        ...row.events.map((event, index) => jsxs('div', { 'data-event-id': event.id, style: { paddingTop: 6 }, children: [
+          definitions([['Event ID', event.id]]),
           jsx('div', { style: muted, children: event.detail || '' }),
           ...eventScores(event).map((score, scoreIndex) => jsxs('div', { style: { ...muted, fontSize: 11, paddingTop: 4 }, children: [
             jsx('div', { children: scoreSummary(score) }),
@@ -301,21 +364,23 @@ function SecurityPanel({ ctx, scope, status }) {
           event.reviewable !== false ? jsxs('div', { style: flow, children: [
             jsx('span', { style: { ...muted, width: '100%', fontSize: 11 }, children: `Post-hoc review: ${event.human_label === 'authorized' ? 'Expected' : event.human_label || 'Not reviewed'}` }),
             jsx('span', { style: { ...muted, width: '100%', fontSize: 11 }, children: 'Annotation only · no effect on execution.' }),
-            ...[['authorized', 'Expected'], ['unwanted', 'Unwanted'], ['insufficient-context', 'Insufficient context']].map(([value, text]) => jsx(Button, { variant: 'ghost', size: 'sm', style: compactButton, disabled: busy !== null || !ready('review', event), 'aria-pressed': event.human_label === value, onClick: () => label(event, value), children: text }, value)),
+            ...[['authorized', 'Expected'], ['unwanted', 'Unwanted'], ['insufficient-context', 'Insufficient context']].map(([value, text]) => jsx(Button, { variant: 'ghost', size: 'sm', style: { ...compactButton, border: event.human_label === value ? '1px solid var(--ui-accent)' : '1px solid transparent', background: event.human_label === value ? 'color-mix(in srgb, var(--ui-accent) 12%, transparent)' : 'transparent', fontWeight: event.human_label === value ? 600 : 400 }, disabled: busy !== null || !ready('review', event), 'aria-pressed': event.human_label === value, onClick: () => label(event, value), children: text }, value)),
           ] }) : null,
+          eventErrors[event.id]?.review ? jsx('div', { role: 'alert', children: eventErrors[event.id].review }) : null,
           event.inspectable === true ? jsx(Button, { variant: 'ghost', size: 'sm', style: compactButton, disabled: busy !== null || !ready('inspect', event), onClick: () => inspect(event), children: 'Inspect raw capture' }) : null,
-          raw?.id === event.id && ready('inspect', event) ? jsxs('div', { children: [jsx(Button, { variant: 'ghost', size: 'sm', style: compactButton, onClick: () => { ticket.current++; setRaw(null); }, children: 'Hide raw capture' }), jsx('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 240, overflowY: 'auto' }, children: raw.content }), raw.truncated ? jsx('div', { role: 'status', children: 'Raw capture truncated · response / display limit reached.' }) : null] }) : null,
+          eventErrors[event.id]?.inspect ? jsx('div', { role: 'alert', children: eventErrors[event.id].inspect }) : null,
+          raw?.id === event.id && ready('inspect', event) ? jsxs('div', { 'aria-label': 'Local-only raw capture', children: [jsx('div', { style: { ...muted, fontSize: 11, marginTop: 6 }, children: 'Raw capture · local-only display' }), jsx(Button, { variant: 'ghost', size: 'sm', style: compactButton, onClick: () => { ticket.current++; setRaw(null); }, children: 'Hide raw capture' }), jsx('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 240, overflowY: 'auto', padding: 8, border: '1px solid var(--ui-stroke-secondary)', borderRadius: 3, background: 'color-mix(in srgb, var(--ui-text-primary) 3%, transparent)', fontFamily: 'monospace', fontSize: 11, userSelect: 'text' }, children: raw.content }), raw.truncated ? jsx('div', { role: 'status', children: 'Raw capture truncated · response / display limit reached.' }) : null] }) : null,
         ] }, `${event.id}:${index}`)),
       ] }),
     ] }, row.key)),
-    jsxs('div', { style: block, children: [
+    jsxs('div', { 'aria-label': 'Replay controls', style: block, children: [
       jsx('h3', { style: heading, children: 'Replay' }),
       jsx('div', { style: { ...muted, fontSize: 11, marginBottom: 4 }, children: 'Manual · all sessions' }),
       jsxs('label', { style: { display: 'block', marginBottom: 4 }, children: [
         jsx('span', { style: muted, children: 'Replay model' }),
         jsx('select', { 'aria-label': 'Replay model', disabled: busy !== null || !ready('replay-choice'), value: replayModel,
           style: { width: '100%', maxWidth: '100%', minWidth: 0, padding: '4px 6px', borderRadius: 3, font: 'inherit', color: 'var(--ui-text-primary)', background: 'var(--ui-bg-input)', border: '1px solid var(--ui-stroke-secondary)' },
-          onChange: e => { if (ready('replay-choice')) setReplayModel(e.target.value); },
+          onChange: e => { if (busyAction.current === null && ready('replay-choice')) { setReplayError(''); setReplayModel(e.target.value); } },
           children: [jsx('option', { value: '', children: 'Choose a model…' }), ...(replay.data?.models || []).map(model => jsx('option', { value: model.id, children: model.label }, model.id))],
         }),
       ] }),
@@ -324,8 +389,8 @@ function SecurityPanel({ ctx, scope, status }) {
       jsx('div', { style: muted, 'aria-live': 'polite', children: `Replay: ${startingReplay ? 'starting' : replay.data?.state || 'checking'}${hasReplayJob ? ` · ${jobModel}` : ''}${replay.data?.exit_code != null ? ` · exit ${replay.data.exit_code}` : ''}${replay.data?.detail ? ` · ${replay.data.detail}` : ''}` }),
       replay.data?.started_at ? jsx('div', { style: muted, children: `Started ${displayTime(replay.data.started_at)}${replay.data.finished_at ? ` · Finished ${displayTime(replay.data.finished_at)}` : ''}` }) : null,
       replay.error ? jsx('div', { role: 'alert', children: `Replay status failed: ${replay.error.message || replay.error}` }) : null,
+      replayError ? jsx('div', { role: 'alert', children: replayError }) : null,
     ] }),
-    actionError ? jsx('div', { role: 'alert', children: actionError }) : null,
   ] });
 }
 export default {

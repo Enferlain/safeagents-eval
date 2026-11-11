@@ -6,6 +6,16 @@ The desktop is the viewer/controller; the Hermes execution backend owns enforcem
 
 Source package: `trial/security-plugin/`. Backend target: default-profile `~/.hermes/plugins/local-agent-security/`. Windows desktop target: `%LOCALAPPDATA%/hermes/desktop-plugins/local-agent-security/plugin.js`. The Windows UI and WSL backend are separate installation halves. Do not install into another Hermes profile.
 
+## Sidebar refinement — UI hot-loaded
+
+The sidebar now groups component health without treating an alternative proxy as a failed observed route. Fresh `observing`/`degraded` route evidence permits **Observed route / Other route** grouping; last-recorded provider alone does not. Unknown, stale and failed reads remain explicit, and Diagnostics retains every component's state and detail. Status values are unboxed; Activity owns its filters; native-only lifecycle events omit irrelevant empty-score text; source labels do not imply journal detections are private captures. Missing counts say **Unknown**, not zero.
+
+Expanded metadata uses wrapping, selectable label/value rows and full event IDs. Selected post-hoc labels are visibly distinguished without becoming approvals. Raw capture has a separate local-only surface with unchanged opt-in, size and cleanup guards. Review/inspection errors belong to their event and action; Replay errors stay with Replay. Scope/filter epochs reject delayed errors, while pending-action guards remain enforced. Full locale timestamps and permanently visible Replay controls are unchanged.
+
+Verification: **101 Python tests and 54 Node UI tests pass**. Inert production-element layout fixtures were rendered at 240, 320 and 410 pixels; these use SDK button stubs and do not prove native interaction. Both installed JavaScript copies byte-match the tested source. Windows UI Automation verified automatic hot-load in the same running Hermes process: Status and the single Activity section are present, the old separate heading and native empty-score text are absent, and Replay remains present. A cropped live-pane screenshot was inspected. No real raw inspection, label mutation, replay launch or session-switch interaction was exercised through the live UI; those paths are covered by isolated tests.
+
+Pre-change JavaScript and deployment hashes are backed up under `/home/imi/.hermes/cache/scratch/security-ui-pre-refinement-wmpt46or`; test/deployment/live-readout evidence is under `/home/imi/.hermes/cache/scratch/security-ui-refinement-20261111`. Backend files remain unchanged. No app/backend restart, configuration edit, model action or enforcement change was performed. Earlier Python activation and source-only journal/replay-recovery limitations below remain separate from this JavaScript refinement.
+
 ## Explicit decision-model choices — installed, Python activation pending
 
 Decision-model identity is not tied to the live/replay role. The trusted `trial/decision_models.py` catalogue offers `lite` (**D3 Lite**) and `qev` (**QEV**), requires allowlisted full model-path provenance, and exposes only sanitized identities and weight/template hashes. Missing or unrecognized provenance displays **Unknown model**, never an inferred identity from aliases or filenames.

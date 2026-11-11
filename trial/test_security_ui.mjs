@@ -504,12 +504,20 @@ function visibleText(tree) {
   return visibleText(children);
 }
 
-test('coverage summary is compact with separate badges, counts and expandable diagnostics', () => {
+test('status summary uses quiet unboxed values with explicit observation and enforcement meanings', () => {
   const h = harness(); h.c.plugin.register(h.ctx); h.open();
   h.data.status.observation = { state: 'not_covered', provider: 'last-provider', detail: 'Provider routing diagnostic' };
   h.data.status.components = [{ id: 'proxy', label: 'Proxy', healthy: false, detail: 'Connection refused diagnostic' }];
   h.data.status.counts = { traffic_captures: 12, verification_captures: 3, replay_attempts: 4, label_events: 5 };
   const tree = h.draw(), nodes = h.nodes(tree), text = visibleText(tree);
+  assert.ok(nodes.some(n => n.type === 'h3' && n.props.children === 'Status'));
+  assert.equal(nodes.some(n => n.type === 'h3' && n.props.children === 'Coverage'), false);
+  for (const value of ['Not covered', 'Not enabled', 'Unknown model']) {
+    const state = nodes.find(n => n.type === 'span' && n.props.children === value);
+    assert.ok(state, value);
+    assert.equal(state.props.style.border, undefined);
+    assert.equal(state.props.style.background, undefined);
+  }
   assert.equal(nodes.some(n => n.type === 'h2' && n.props.children === 'Security'), false, 'native pane already supplies the title');
   for (const label of ['Observation', 'Not covered', 'Enforcement', 'Not enabled', 'Traffic', '12', 'Verification', '3', 'Replay', '4', 'Reviews', '5', 'Proxy', 'Unavailable']) assert.ok(text.includes(label), label);
   const diagnostics = nodes.find(n => n.type === 'details' && visibleText(n).includes('Diagnostics'));
@@ -630,7 +638,12 @@ test('review counts prefer unique events and preserve explicit unknown instead o
   assert.match(visibleText(counts()), /2 Reviews/);
   assert.doesNotMatch(visibleText(counts()), /9/);
   h.data.status.counts.reviewed_events = null;
-  assert.match(visibleText(counts()), /— Reviews/);
+  assert.match(visibleText(counts()), /Unknown Reviews/);
+  assert.doesNotMatch(visibleText(counts()), /—|0/);
+  h.data.events.unassociated_count = null;
+  assert.match(visibleText(h.draw()), /Unknown.*scope notes/);
+  h.data.status.counts.traffic_captures = 0;
+  assert.match(visibleText(counts()), /0 Traffic/);
 });
 
 test('store health stays distinct from actual live judge identity and replay choice', () => {
@@ -638,7 +651,8 @@ test('store health stays distinct from actual live judge identity and replay cho
   h.data.status.subsystems = { activity: { healthy: true, detail: 'Activity ready' }, review: { healthy: false, detail: 'Review damaged' }, replay: { healthy: true, detail: 'Replay records ready' } };
   h.data.status.judge = { state: 'available', model: { id: 'qev', label: 'QEV', model_file_sha256: 'a'.repeat(64), native_template_sha256: 'b'.repeat(64) }, threshold: 0.88, detail: 'Verified backend identity' };
   const tree = chooseReplay(h, 'lite'), text = visibleText(tree);
-  for (const label of ['Activity records: Healthy', 'Review records: Unavailable', 'Replay records: Healthy', 'Live judge', 'QEV · Available']) assert.ok(text.includes(label), label);
+  for (const label of ['Storage', '2 healthy', 'Review records: Unavailable', 'Live judge', 'QEV · Available']) assert.ok(text.includes(label), label);
+  assert.doesNotMatch(text, /Activity records: Healthy|Replay records: Healthy/);
   assert.doesNotMatch(text, /QEV: Healthy|QEV model healthy|D3 Lite · Available/);
   const live = h.nodes(tree).find(n => n.props['aria-label'] === 'Live judge');
   assert.ok(live, 'live identity is independently labeled');
@@ -647,8 +661,9 @@ test('store health stays distinct from actual live judge identity and replay cho
   const diagnostics = h.nodes(tree).find(n => n.type === 'details' && visibleText(n).includes('Diagnostics'));
   diagnostics.props.open = true;
   assert.match(visibleText(diagnostics), /Verified backend identity/);
+  for (const label of ['Activity records: Healthy', 'Review records: Unavailable', 'Replay records: Healthy', 'Review damaged']) assert.ok(visibleText(diagnostics).includes(label), label);
   assert.match(visibleText(diagnostics), /0.88.*provisional/i);
-  assert.ok(text.indexOf('Activity scope') < text.indexOf('Replay model'));
+  assert.ok(text.indexOf('Activity') < text.indexOf('Replay model'));
   assert.ok(h.nodes(tree).findIndex(n => n.type === 'article') < h.nodes(tree).findIndex(n => n.type === 'h3' && n.props.children === 'Replay'));
 });
 
@@ -760,6 +775,328 @@ test('inspection is an explicit capability independent of reviewability', () => 
   const articles = h.nodes(h.draw()).filter(n => n.type === 'article');
   assert.ok(h.nodes(articles[0]).some(n => n.props.children === 'Inspect raw capture'));
   assert.equal(h.nodes(articles[1]).some(n => n.props.children === 'Inspect raw capture'), false);
+});
+
+test('health summary counts healthy components and keeps every component state and detail in diagnostics', () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  h.data.status.components = [
+    { id: 'decision', label: 'Local decision model', healthy: true, detail: 'Decision diagnostic' },
+    { id: 'capture', label: 'Observation adapter', healthy: false, detail: 'Adapter diagnostic' },
+    { id: 'store', label: 'Private capture store', healthy: true, detail: 'Store diagnostic' },
+  ];
+  const tree = h.draw(), text = visibleText(tree);
+  const health = h.nodes(tree).find(n => n.props['aria-label'] === 'Health summary');
+  assert.ok(health);
+  assert.match(visibleText(health), /1 healthy/);
+  assert.match(text, /Observation adapter: Unavailable/);
+  assert.doesNotMatch(text, /Local decision model: Healthy|Private capture store: Healthy|diagnostic/);
+  const diagnostics = h.nodes(tree).find(n => n.type === 'details' && visibleText(n) === 'Diagnostics');
+  diagnostics.props.open = true;
+  for (const label of ['Local decision model: Healthy', 'Observation adapter: Unavailable', 'Private capture store: Healthy', 'Decision diagnostic', 'Adapter diagnostic', 'Store diagnostic']) assert.ok(visibleText(diagnostics).includes(label), label);
+});
+
+test('only fresh observing or degraded route evidence separates the other proxy without changing coverage', () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  h.data.status.components = [
+    { id: 'proxy_glm', label: 'GLM observation proxy', healthy: true },
+    { id: 'proxy_local', label: 'Local observation proxy', healthy: false },
+    { id: 'decision', label: 'Local decision model', healthy: true },
+    { id: 'capture', label: 'Observation adapter', healthy: true },
+  ];
+  const group = (tree, label) => h.nodes(tree).find(n => n.props['aria-label'] === label);
+  h.data.status.observation = { state: 'observing', provider: 'safeagents-glm' };
+  let tree = h.draw();
+  assert.match(visibleText(group(tree, 'Observed route')), /3 healthy/);
+  assert.doesNotMatch(visibleText(group(tree, 'Observed route')), /Unavailable/);
+  assert.match(visibleText(group(tree, 'Other route')), /Local observation proxy: Unavailable/);
+  assert.equal(h.c.coverageView(h.data.status, null).label, 'Observing');
+  h.data.status.observation = { state: 'degraded', provider: 'safeagents-local' };
+  tree = h.draw();
+  assert.match(visibleText(group(tree, 'Observed route')), /Local observation proxy: Unavailable/);
+  assert.match(visibleText(group(tree, 'Other route')), /1 healthy/);
+  assert.equal(h.c.coverageView(h.data.status, null).label, 'Degraded');
+  for (const state of ['unknown', 'not_covered']) {
+    h.data.status.observation = { state, provider: 'safeagents-glm', detail: 'Last-recorded only' };
+    tree = h.draw();
+    assert.equal(group(tree, 'Observed route'), undefined);
+    assert.equal(group(tree, 'Other route'), undefined);
+    assert.match(visibleText(group(tree, 'Route unconfirmed')), /Local observation proxy: Unavailable/);
+  }
+  for (const provider of [null, 'unrecognized-provider', 'constructor', '__proto__']) {
+    h.data.status.observation = { state: 'degraded', provider };
+    assert.ok(group(h.draw(), 'Route unconfirmed'), String(provider));
+  }
+  h.data.status.observation = { state: 'observing', provider: 'safeagents-glm' };
+  h.data.status.observed_at = 0;
+  tree = h.draw();
+  assert.equal(group(tree, 'Observed route'), undefined);
+  assert.ok(group(tree, 'Route unconfirmed'));
+});
+
+test('missing, stale and failed health reads remain distinct without healthy counts or invented routes', () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  h.data.status.observation = { state: 'observing', provider: 'safeagents-glm' };
+  h.data.status.components = [{ id: 'proxy_glm', label: 'GLM observation proxy', healthy: true, detail: 'TCP only' }];
+  const healthText = tree => visibleText(h.nodes(tree).find(n => n.props['aria-label'] === 'Health summary'));
+  let tree = h.draw();
+  assert.match(healthText(tree), /Observation adapter: Unknown/);
+  assert.match(healthText(tree), /Private capture store: Unknown/);
+  assert.match(healthText(tree), /Review records: Unknown/);
+  assert.match(healthText(tree), /Other route.*Local observation proxy: Unknown/);
+  h.data.status.observed_at = 0;
+  tree = h.draw();
+  assert.match(healthText(tree), /GLM observation proxy: Unknown \(stale\)/);
+  assert.doesNotMatch(healthText(tree), /healthy|Observed route|Other route/);
+  const diagnostics = h.nodes(tree).find(n => n.type === 'details' && visibleText(n) === 'Diagnostics');
+  diagnostics.props.open = true;
+  assert.match(visibleText(diagnostics), /GLM observation proxy: Unknown \(stale\).*Last recorded: Healthy.*TCP only/);
+  h.errors.status = new Error('offline');
+  tree = h.draw();
+  assert.match(healthText(tree), /GLM observation proxy: Unknown \(request failed\)/);
+  assert.doesNotMatch(healthText(tree), /healthy|Observed route|Other route/);
+});
+
+test('only native-only lifecycle rows omit score absence while capture provenance and real failures stay visible', () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  h.data.events.events = [
+    { id: 'native', source: 'hermes', session_id: 's', reviewable: false, scores: [], execution: 'tool_returned' },
+    { id: 'capture', source: 'safeagents', session_id: 's', reviewable: false, scores: [] },
+    { id: 'replay', source: 'replay', session_id: 's', reviewable: false },
+    { id: 'legacy', source: 'hermes', session_id: 's', reviewable: false, lite_score: null },
+    { id: 'failure', source: 'hermes', session_id: 's', reviewable: false, scores: [scoreFixture('live', 'qev', null, { error: true })] },
+    { id: 'mixed-native', source: 'hermes', session_id: 's', turn_id: 't', tool_call_id: 'c', reviewable: false },
+    { id: 'mixed-capture', source: 'safeagents', session_id: 's', turn_id: 't', tool_call_id: 'c', reviewable: false },
+  ];
+  const rows = h.nodes(h.draw()).filter(n => n.type === 'article');
+  assert.doesNotMatch(visibleText(rows[0]), /No model scores|score provenance/);
+  assert.match(visibleText(rows[1]), /No model scores recorded/);
+  assert.match(visibleText(rows[2]), /No model scores recorded/);
+  assert.match(visibleText(rows[3]), /Unknown model · score provenance unavailable/);
+  assert.match(visibleText(rows[4]), /Score failed/);
+  assert.match(visibleText(rows[5]), /No model scores recorded/);
+  assert.equal(rows.length, 6, 'only explicit session/turn/tool/request keys group events');
+});
+
+test('source labels describe native, capture and replay evidence without asserting correlation', () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  h.data.events.events = ['hermes', 'safeagents', 'proxy', 'replay', 'future-source', null, 'constructor', '__proto__'].map((source, i) => ({ id: String(i), session_id: 's', source, reviewable: false }));
+  const rows = h.nodes(h.draw()).filter(n => n.type === 'article');
+  for (const [index, label] of ['Hermes lifecycle', 'SafeAgents', 'Proxy capture', 'Replay', 'future-source', 'Source unknown', 'constructor', '__proto__'].entries()) assert.ok(visibleText(rows[index]).includes(label), label);
+  assert.equal(h.c.sourceLabel('safeagents'), 'SafeAgents', 'Journal detections and private captures share this source; do not imply a capture exists.');
+  assert.equal(rows.length, 8);
+  assert.doesNotMatch(visibleText(rows), /correlated|matched|protected|approved/i);
+});
+
+test('Activity owns its accessible scope controls and truthfully names events without a session', () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  let tree = h.draw(), nodes = h.nodes(tree);
+  const activityHeadings = nodes.filter(n => n.type === 'h3' && /Activity/.test(n.props.children));
+  assert.deepEqual(activityHeadings.map(n => n.props.children), ['Activity']);
+  const selector = nodes.find(n => n.type === 'select' && n.props['aria-label'] === 'Activity scope');
+  assert.ok(selector);
+  assert.ok(nodes.indexOf(activityHeadings[0]) < nodes.indexOf(selector));
+  assert.ok(nodes.indexOf(selector) < nodes.findIndex(n => n.type === 'article'));
+  assert.match(visibleText(tree), /2 events without a session · scope notes/);
+  assert.doesNotMatch(visibleText(tree), /unassociated/i);
+  selector.props.onChange({ target: { value: 'all' } });
+  tree = h.draw();
+  assert.equal(h.nodes(tree).find(n => n.props['aria-label'] === 'Activity scope').props.value, 'all');
+  const notes = h.nodes(tree).find(n => n.type === 'details' && visibleText(n).includes('scope notes')); notes.props.open = true;
+  assert.match(visibleText(notes), /Events without a session appear in All sessions only/);
+});
+
+test('expanded event identifiers and recorded status use wrapping definition values without truncation', () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  const long = 'unbroken-identifier-'.repeat(18);
+  h.data.events.events = [{ id: `event-${long}`, session_id: 's', turn_id: `turn-${long}`, tool_call_id: `call-${long}`, api_request_id: `request-${long}`, status: 'completed', source: 'hermes', reviewable: false }];
+  const row = h.nodes(h.draw()).find(n => n.type === 'article');
+  const details = h.nodes(row).find(n => n.type === 'details'); details.props.open = true;
+  const lists = h.nodes(details).filter(n => n.type === 'dl');
+  assert.ok(lists.length);
+  const values = lists.flatMap(list => h.nodes(list).filter(n => n.type === 'dd'));
+  for (const value of ['s', `event-${long}`, `turn-${long}`, `call-${long}`, `request-${long}`, 'completed']) {
+    const node = values.find(n => n.props.children === value);
+    assert.ok(node, value);
+    assert.equal(node.props.style.overflowWrap, 'anywhere');
+    assert.equal(node.props.style.userSelect, 'text');
+    assert.equal(node.props.style.textOverflow, undefined);
+    assert.equal(node.props.style.overflow, undefined);
+  }
+  for (const label of ['Session:', 'Turn:', 'Tool call:', 'API request:', 'Recorded status:', 'Event ID:']) assert.ok(h.nodes(details).some(n => n.type === 'dt' && n.props.children === label), label);
+});
+
+test('selected post-hoc labels have a persistent visual distinction without claiming approval', () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  for (const selected of ['authorized', 'unwanted', 'insufficient-context']) {
+    h.data.events.events[0].human_label = selected;
+    const row = h.nodes(h.draw()).find(n => n.type === 'article');
+    const buttons = h.nodes(row).filter(n => n.type === 'Button' && typeof n.props['aria-pressed'] === 'boolean');
+    const active = buttons.find(n => n.props['aria-pressed']);
+    assert.ok(active);
+    assert.match(active.props.style.border || '', /var\(--ui-accent\)/);
+    assert.match(active.props.style.background || '', /var\(--ui-accent\)/);
+    assert.equal(active.props.style.fontWeight, 600);
+    assert.ok(buttons.filter(n => !n.props['aria-pressed']).every(n => n.props.style.background !== active.props.style.background));
+    assert.match(JSON.stringify(row), /Annotation only · no effect on execution/);
+    assert.doesNotMatch(JSON.stringify(row), /Approved|Allow tool|Block tool/);
+  }
+});
+
+test('raw capture is an opt-in local-only padded monospace surface that hides and clears on filters', async () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  assert.equal(h.nodes(h.draw()).some(n => n.type === 'pre'), false);
+  await h.nodes(h.draw()).find(n => n.props.children === 'Inspect raw capture').props.onClick();
+  let tree = h.draw();
+  const surface = h.nodes(tree).find(n => n.props['aria-label'] === 'Local-only raw capture');
+  assert.ok(surface);
+  assert.match(JSON.stringify(surface), /Raw capture · local-only display/);
+  const raw = h.nodes(surface).find(n => n.type === 'pre');
+  assert.match(raw.props.style.border || '', /var\(--ui-stroke-secondary\)/);
+  assert.ok(raw.props.style.padding);
+  assert.match(raw.props.style.fontFamily || '', /monospace/);
+  assert.equal(raw.props.style.whiteSpace, 'pre-wrap');
+  assert.equal(raw.props.style.overflowWrap, 'anywhere');
+  h.nodes(surface).find(n => n.props.children === 'Hide raw capture').props.onClick();
+  assert.doesNotMatch(JSON.stringify(h.draw()), /LOCAL RAW SECRET/);
+  await h.nodes(h.draw()).find(n => n.props.children === 'Inspect raw capture').props.onClick();
+  h.nodes(h.draw()).find(n => n.props['aria-label'] === 'Activity scope').props.onChange({ target: { value: 'all' } });
+  assert.doesNotMatch(JSON.stringify(h.draw()), /LOCAL RAW SECRET/);
+  await h.nodes(h.draw()).find(n => n.props.children === 'Inspect raw capture').props.onClick();
+  h.nodes(h.draw()).find(n => n.type === 'input').props.onChange({ target: { checked: true } });
+  assert.doesNotMatch(JSON.stringify(h.draw()), /LOCAL RAW SECRET/);
+});
+
+test('review and inspection failures stay with the exact event while Replay errors stay beside Replay', async () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  h.data.events.events = ['one', 'two'].map(id => ({ id, session_id: 's', turn_id: 't', tool_call_id: 'c', source: 'safeagents', reviewable: true, inspectable: true }));
+  chooseReplay(h, 'lite');
+  const event = id => h.nodes(h.draw()).find(n => n.props['data-event-id'] === id);
+  const action = (id, text) => h.nodes(event(id)).find(n => n.type === 'Button' && n.props.children === text);
+  assert.ok(event('one'), 'exact event owns its details and actions, even in a grouped call');
+  h.ctx.rest = async (path, options) => {
+    h.calls.push({ path, options });
+    if (options?.body?.id === 'one' || path === '/replay') throw new Error('rejected fixture');
+    return { success: true };
+  };
+  await action('one', 'Expected').props.onClick();
+  assert.match(JSON.stringify(event('one')), /Review failed: rejected fixture/);
+  assert.doesNotMatch(JSON.stringify(event('two')), /Review failed/);
+  await action('one', 'Inspect raw capture').props.onClick();
+  assert.match(JSON.stringify(event('one')), /Review failed: rejected fixture/);
+  assert.match(JSON.stringify(event('one')), /Inspect failed: rejected fixture/);
+  assert.equal(action('two', 'Expected').props.disabled, false);
+  await action('two', 'Expected').props.onClick();
+  assert.doesNotMatch(JSON.stringify(event('two')), /failed/);
+  await replayButton(h).props.onClick();
+  const tree = h.draw();
+  const replay = h.nodes(tree).find(n => n.props['aria-label'] === 'Replay controls');
+  assert.ok(replay);
+  assert.match(visibleText(replay), /Replay start failed: rejected fixture/);
+  assert.doesNotMatch(visibleText(replay), /Review failed|Inspect failed/);
+  assert.doesNotMatch(JSON.stringify(event('one')), /Replay start failed/);
+  assert.match(JSON.stringify(event('one')), /Review failed.*Inspect failed/);
+  assert.equal(replayButton(h).props.disabled, false, 'failure does not disable retry');
+});
+
+test('completed action errors clear on Activity filters, owner changes and pane close without reviving', async () => {
+  for (const change of ['sessions', 'verification', 'owner', 'close']) {
+    const h = harness(); h.c.plugin.register(h.ctx); chooseReplay(h, 'lite');
+    h.ctx.rest = async () => { throw new Error('PRIVATE ACTION FAILURE'); };
+    for (const name of ['Expected', 'Inspect raw capture', 'Replay pending captures']) await h.nodes(h.draw()).find(n => n.type === 'Button' && n.props.children === name).props.onClick();
+    assert.match(JSON.stringify(h.draw()), /PRIVATE ACTION FAILURE/);
+    if (change === 'sessions') h.nodes(h.draw()).find(n => n.props['aria-label'] === 'Activity scope').props.onChange({ target: { value: 'all' } });
+    if (change === 'verification') h.nodes(h.draw()).find(n => n.type === 'input').props.onChange({ target: { checked: true } });
+    if (change === 'owner') h.values.focusedSessionOwner = { connectionId: 'B', profile: 'default' };
+    if (change === 'close') h.close();
+    assert.doesNotMatch(JSON.stringify(h.draw()), /PRIVATE ACTION FAILURE/, change);
+    if (change === 'sessions') h.nodes(h.draw()).find(n => n.props['aria-label'] === 'Activity scope').props.onChange({ target: { value: 'current' } });
+    if (change === 'verification') h.nodes(h.draw()).find(n => n.type === 'input').props.onChange({ target: { checked: false } });
+    if (change === 'owner') h.values.focusedSessionOwner = { connectionId: 'local', profile: 'default' };
+    if (change === 'close') h.open();
+    assert.doesNotMatch(JSON.stringify(h.draw()), /PRIVATE ACTION FAILURE/, `${change} round-trip`);
+  }
+});
+
+test('late action failures cannot repopulate errors after a filter or owner round-trip', async () => {
+  for (const name of ['Expected', 'Inspect raw capture', 'Replay pending captures']) {
+    for (const change of ['sessions', 'verification', 'owner', 'close']) {
+      const h = harness(); h.c.plugin.register(h.ctx); chooseReplay(h, 'lite');
+      let reject;
+      h.ctx.rest = () => new Promise((_, fail) => { reject = fail; });
+      const request = h.nodes(h.draw()).find(n => n.type === 'Button' && n.props.children === name).props.onClick();
+      const filter = value => change === 'sessions'
+        ? h.nodes(h.draw()).find(n => n.props['aria-label'] === 'Activity scope').props.onChange({ target: { value } })
+        : h.nodes(h.draw()).find(n => n.type === 'input').props.onChange({ target: { checked: value } });
+      if (change === 'sessions') { filter('all'); h.draw(); filter('current'); }
+      if (change === 'verification') { filter(true); h.draw(); filter(false); }
+      if (change === 'owner') { h.values.focusedSessionOwner = { connectionId: 'B', profile: 'default' }; h.draw(); h.values.focusedSessionOwner = { connectionId: 'local', profile: 'default' }; }
+      if (change === 'close') { h.close(); h.open(); }
+      h.draw(); reject(new Error('LATE PRIVATE FAILURE')); await request;
+      const alerts = h.nodes(h.draw()).filter(n => n.props.role === 'alert').map(visibleText).join(' ');
+      assert.doesNotMatch(alerts, /LATE PRIVATE FAILURE/, `${name}: ${change}`);
+      assert.equal(replaySelector(h).props.disabled, false, 'pending state is released after completion');
+    }
+  }
+});
+
+test('unavailable or stale resources erase action failures and raw without recovery reviving late responses', async () => {
+  for (const failure of ['activity', 'status', 'stale']) {
+    const h = harness(); h.c.plugin.register(h.ctx); chooseReplay(h, 'lite');
+    const click = text => h.nodes(h.draw()).find(n => n.type === 'Button' && n.props.children === text).props.onClick();
+    await click('Inspect raw capture');
+    h.ctx.rest = async () => { throw new Error('OLD FAILURE'); };
+    await click('Expected'); await click('Replay pending captures');
+    let reject;
+    h.ctx.rest = () => new Promise((_, fail) => { reject = fail; });
+    const request = click('Expected');
+    if (failure === 'activity') h.errors.events = new Error('offline');
+    if (failure === 'status') h.errors.status = new Error('offline');
+    if (failure === 'stale') h.data.status.observed_at = 0;
+    h.draw(); // flush cleanup effects, as React does after the failed read
+    const privateState = () => h.nodes(h.draw()).filter(n => n.props.role === 'alert' || n.type === 'pre').map(visibleText).join(' ');
+    assert.doesNotMatch(privateState(), /OLD FAILURE|LOCAL RAW SECRET/, failure);
+    delete h.errors.events; delete h.errors.status; h.data.status.observed_at = new Date().toISOString(); h.draw();
+    reject(new Error('LATE FAILURE')); await request;
+    assert.doesNotMatch(privateState(), /OLD FAILURE|LATE FAILURE|LOCAL RAW SECRET/, `${failure} recovery`);
+  }
+});
+
+test('pending actions retain busy gating for retained callbacks and Replay stays busy across filters', async () => {
+  for (const name of ['Expected', 'Inspect raw capture', 'Replay pending captures']) {
+    const h = harness(); h.c.plugin.register(h.ctx); chooseReplay(h, 'lite');
+    const buttons = h.nodes(h.draw()).filter(n => n.type === 'Button' && ['Expected', 'Inspect raw capture', 'Replay pending captures'].includes(n.props.children));
+    const select = replaySelector(h).props.onChange;
+    let finish;
+    h.ctx.rest = (path, options) => { h.calls.push({ path, options }); return new Promise(done => { finish = done; }); };
+    const pending = buttons.find(n => n.props.children === name).props.onClick();
+    if (name === 'Replay pending captures') {
+      h.nodes(h.draw()).find(n => n.props['aria-label'] === 'Activity scope').props.onChange({ target: { value: 'all' } });
+    }
+    const tree = h.draw();
+    assert.ok(h.nodes(tree).filter(n => n.type === 'Button' && ['Expected', 'Inspect raw capture', 'Replay pending captures'].includes(n.props.children)).every(n => n.props.disabled), name);
+    // Directly invoke retained callbacks; disabled presentation alone is not a guard.
+    for (const button of buttons) {
+      const duplicate = button.props.onClick();
+      assert.equal(h.calls.length, 1, `${name}: ${button.props.children}`);
+      await duplicate;
+    }
+    select({ target: { value: 'qev' } });
+    assert.equal(replaySelector(h).props.value, 'lite');
+    finish({ success: true, content: 'fixture' }); await pending;
+    assert.equal(replaySelector(h).props.disabled, false);
+  }
+});
+
+test('changing the next Replay model clears only its start error, not an event review failure', async () => {
+  const h = harness(); h.c.plugin.register(h.ctx); chooseReplay(h, 'lite');
+  h.ctx.rest = async () => { throw new Error('fixture rejection'); };
+  await h.nodes(h.draw()).find(n => n.props.children === 'Expected').props.onClick();
+  await replayButton(h).props.onClick();
+  const tree = chooseReplay(h, 'qev');
+  const replay = h.nodes(tree).find(n => n.props['aria-label'] === 'Replay controls');
+  assert.doesNotMatch(visibleText(replay), /Replay start failed/);
+  assert.match(JSON.stringify(h.nodes(tree).find(n => n.type === 'article')), /Review failed: fixture rejection/);
+  assert.equal(replayButton(h, tree).props.disabled, false);
 });
 
 const now = Date.parse('2026-11-10T16:00:00Z');
