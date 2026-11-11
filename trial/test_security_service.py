@@ -198,6 +198,45 @@ class SecurityTests(unittest.TestCase):
         time.sleep(.1)
         self.assertEqual(client.get('/replay').json()['state'], 'failed')
 
+    def test_replay_status_recovers_child_lock_without_inventing_outcome(self):
+        import sys
+        self.write('calls.jsonl', [self.capture()])
+        executable = self.repo / '.venv-trial/bin/python'
+        executable.parent.mkdir(parents=True)
+        executable.symlink_to(sys.executable)
+        (self.repo / 'trial/replay_model.py').write_text('import time; time.sleep(30)\n')
+        def stop(process):
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=5)
+        self.service.start_replay('lite')
+        child = self.service._process
+        self.addCleanup(stop, child)
+        owned = self.service.replay_status()
+        self.assertEqual(owned['model'], 'lite')
+        self.assertIsNotNone(owned['started_at'])
+        # Simulate loss of the old backend: only the child's inherited FD remains.
+        self.service._job_lock_file.close()
+        self.service._job_lock_file = None
+        recovered = self.mod.SecurityService(repo_root=self.repo, hermes_home=self.home)
+        current = recovered.replay_status()
+        self.assertEqual(current['state'], 'running')
+        self.assertIsNone(current['model'])
+        self.assertIsNone(current['started_at'])
+        self.assertIn('unknown', current['detail'].lower())
+        with self.assertRaises(self.mod.SecurityError) as caught:
+            recovered.start_replay('qev')
+        self.assertEqual(caught.exception.status, 409)
+        stop(child)
+        current = recovered.replay_status()
+        self.assertEqual(current['state'], 'idle')
+        self.assertIsNone(current['exit_code'])
+        self.assertIsNone(current['finished_at'])
+        self.assertIn('unknown', current['detail'].lower())
+        self.assertEqual(recovered.start_replay('qev')['state'], 'running')
+        self.addCleanup(stop, recovered._process)
+        self.addCleanup(recovered._job_lock_file.close)
+
     def test_native_route_evidence_health_and_staleness(self):
         import time
         route = dict(schema=1, session_id='session-a', turn_id='turn-a', api_request_id='req-a',
@@ -277,6 +316,47 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(client.post('/label', json={'id': row['id'], 'value': 'authorized'}).status_code, 400)
         self.assertEqual(client.post('/inspect', json={'id': row['id'], 'include_content': True}).status_code, 400)
 
+    def test_journal_labels_bind_to_content_and_match_cli(self):
+        import hashlib
+        import shutil
+        for name in ('observation.py', 'observe.py', 'decision_models.py'):
+            shutil.copyfile(ROOT / name, self.repo / 'trial' / name)
+        capture = self.capture()
+        self.write('calls.jsonl', [capture])
+        journal = self.repo / 'trial/journal.jsonl'
+        row = {'id': 1, 'time': 101., 'judge': None, 'verdict': 'flagged', 'arguments': 'FIRST_PRIVATE'}
+        journal.write_text(json.dumps(row) + '\n')
+        legacy = 'journal:' + hashlib.sha256(str(journal).encode()).hexdigest()[:12] + ':1'
+        self.write('labels.jsonl', [{'id': legacy, 'label': 'unwanted'}])
+        client = self.client()
+        def event():
+            return next(e for e in client.get('/events?all_sessions=true').json()['events']
+                        if e['id'].startswith('journal:'))
+        first = event()
+        self.assertNotEqual(first['id'], legacy)
+        self.assertIsNone(first['human_label'])
+        self.assertEqual(client.post('/label', json={'id': first['id'], 'value': 'authorized'}).status_code, 200)
+        cli = load('journal_identity_cli', ROOT / 'observe.py')
+        self.assertEqual(cli.journal_rows([journal], [capture])[1][0]['id'], first['id'])
+        # Whitespace/key order and later appends do not invalidate the original review.
+        journal.write_text(json.dumps(row, sort_keys=True, separators=(',', ':')) + '\n'
+                           + json.dumps(dict(row, id=2, time=102.)) + '\n')
+        self.assertEqual(client.get('/events/' + first['id']).json()['human_label'], 'authorized')
+        # Reuse the integer AND timestamp, changing only hidden record content.
+        replacement = dict(row, arguments='SECOND_PRIVATE')
+        journal.write_text(json.dumps(replacement) + '\n')
+        current = event()
+        self.assertNotEqual(current['id'], first['id'])
+        self.assertIsNone(current['human_label'])
+        self.assertEqual(client.get('/events/' + first['id']).status_code, 404)
+        self.assertEqual(client.post('/label', json={'id': legacy, 'value': 'authorized'}).status_code, 404)
+        self.assertEqual(cli.journal_rows([journal], [capture])[1][0]['id'], current['id'])
+        with patch.object(self.service, '_health', return_value=[]):
+            counts = client.get('/status').json()['counts']
+        self.assertEqual(counts['label_events'], 2)
+        self.assertEqual(counts['reviewed_events'], 0)
+        self.assertNotIn('PRIVATE', json.dumps(current))
+
     def test_journal_metadata_probe_filtering_and_limits(self):
         self.write('calls.jsonl', [self.capture('verification')])
         journal = self.repo / 'trial/local-journal.jsonl'
@@ -286,7 +366,7 @@ class SecurityTests(unittest.TestCase):
         result = client.get('/events?all_sessions=true').json()
         self.assertEqual(len(result['events']), 1)
         event = result['events'][0]
-        self.assertRegex(event['id'], r'^journal:[0-9a-f]{12}:7$')
+        self.assertRegex(event['id'], r'^journal:[0-9a-f]{12}:7:[0-9a-f]{64}$')
         self.assertTrue(event['would_flag'])
         self.assertEqual(event['scores'], [])
         self.assertIsNone(event['session_id'])

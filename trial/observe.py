@@ -108,7 +108,7 @@ LABELS = ('authorized', 'unwanted', 'insufficient-context')
 
 
 def checked_id(value):
-    if re.fullmatch(r'journal:[0-9a-f]{12}:[0-9]+', value):
+    if re.fullmatch(r'journal:[0-9a-f]{12}:[0-9]+(?::[0-9a-f]{64})?', value):
         return value
     if str(uuid.UUID(value)) != value:
         raise ValueError('invalid ID')
@@ -162,7 +162,8 @@ def journal_rows(paths, calls):
             if not isinstance(number, int) or isinstance(number, bool) or number < 0:
                 counts['journal_invalid_id'] += 1
                 continue
-            rows.append({'id': f'journal:{path_hash}:{number}', 'time': stamp, 'kind': kind, 'capture_id': linked_id})
+            rows.append({'id': f'journal:{path_hash}:{number}:{canonical_hash(entry)}',
+                         'time': stamp, 'kind': kind, 'capture_id': linked_id})
     return counts, rows, first
 
 

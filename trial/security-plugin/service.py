@@ -66,7 +66,7 @@ class SecurityError(Exception):
 def checked_id(value):
     if not isinstance(value, str):
         raise SecurityError(400, 'Invalid event identifier.')
-    if re.fullmatch(r'journal:[0-9a-f]{12}:[0-9]+', value):
+    if re.fullmatch(r'journal:[0-9a-f]{12}:[0-9]+(?::[0-9a-f]{64})?', value):
         return value
     try:
         if str(uuid.UUID(value)) == value:
@@ -388,7 +388,10 @@ class SecurityService:
                     deterministic = 'judge' in row and judge is None and row.get('verdict') in ('flagged', 'blocked', 'suspicious')
                     linked = re.search(r'observation_id=([0-9a-f-]{36})(?![0-9a-f-])', judge) if isinstance(judge, str) else None
                     capture = next((r for r in records['calls'] if linked and r['id'] == linked.group(1)), None)
-                    cid = f'journal:{path_hash}:{index}'
+                    # Content-bound IDs never fall back to ambiguous legacy labels.
+                    content_hash = hashlib.sha256(json.dumps(row, sort_keys=True, separators=(',', ':'),
+                                                            ensure_ascii=False).encode('utf-8')).hexdigest()
+                    cid = f'journal:{path_hash}:{index}:{content_hash}'
                     detail = ('Journal detection failure.' if failure else 'Deterministic bypass flag; not model-scored.' if deterministic
                               else 'Proxy journal observation; not proof of tool interception.')
                     events.append({'id': cid, 'time': stamp, 'session_id': None, 'turn_id': None, 'tool_call_id': None,
@@ -441,6 +444,25 @@ class SecurityService:
         return {'events': sorted(selected, key=lambda r: (r['time'], r['id']), reverse=True)[:limit],
                 'unassociated_count': unassociated, 'healthy': True, 'subsystems': subsystems}
 
+    def _external_replay_running(self):
+        """Probe without creating a lock or disturbing a child's inherited lock."""
+        self._check_store()
+        path = self.store_path / 'replay.lock'
+        self._safe_path(path)
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            return False
+        with os.fdopen(fd, 'rb') as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise OSError('unsafe lock')
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+        return False
+
     def _poll_replay(self):
         if self._process is not None and self._job['state'] == 'running':
             code = self._process.poll()
@@ -451,6 +473,22 @@ class SecurityService:
                 if self._job_lock_file is not None:
                     self._job_lock_file.close()
                     self._job_lock_file = None
+                self._process = None
+            else:
+                return dict(self._job)
+        try:
+            external = self._external_replay_running()
+        except OSError:
+            return {'state': 'unavailable', 'started_at': None, 'finished_at': None,
+                    'exit_code': None, 'model': None, 'detail': 'Replay lock unavailable or invalid.'}
+        if external:
+            self._job = {'state': 'running', 'started_at': None, 'finished_at': None,
+                         'exit_code': None, 'model': None,
+                         'detail': 'Replay lock held; ownership, model and start time unknown.'}
+        elif self._job['state'] == 'running':
+            self._job = {'state': 'idle', 'started_at': None, 'finished_at': None,
+                         'exit_code': None, 'model': None,
+                         'detail': 'Previously observed replay lock released; outcome unknown.'}
         return dict(self._job)
 
     def replay_status(self):
@@ -458,10 +496,11 @@ class SecurityService:
             records, subsystems = self._snapshot()
             available = records['calls'] is not None and records['replays'] is not None
             result = self._poll_replay()
+            available = available and result['state'] != 'unavailable'
             models = [{'id': value['id'], 'label': value['label']}
                       for value in model_catalog().MODEL_SPECS.values()]
             result.update(available=available, subsystems=subsystems, models=models)
-            if not available and result['state'] != 'running':
+            if not available and result['state'] not in ('running', 'unavailable'):
                 result.update(state='unavailable', detail='Capture or replay records unavailable or invalid.')
             return result
 

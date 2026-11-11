@@ -282,7 +282,8 @@ class ObserveTests(unittest.TestCase):
                    dict(base, id=4, judge='error: INERT_PRIVATE_ERROR'), dict(base, id=5, judge='block: legacy'),
                    dict(base, id=6, judge='block: observation_id=00000000-0000-4000-8000-000000000099')]
         journal.write_text(''.join(json.dumps(row) + '\n' for row in entries))
-        stable_id = 'journal:' + hashlib.sha256(str(journal.resolve()).encode()).hexdigest()[:12] + ':2'
+        stable_id = ('journal:' + hashlib.sha256(str(journal.resolve()).encode()).hexdigest()[:12]
+                     + ':2:' + module.canonical_hash(entries[1]))
         module.label(self.store, stable_id, 'insufficient-context', note='INERT_PRIVATE_NOTE')
         before = journal.read_bytes()
         result = module.report(self.store, journals=[journal], gap=.3)

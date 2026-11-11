@@ -18,6 +18,11 @@ All notable changes are recorded here. This project follows the [Keep a Changelo
 
 - Git publication now uses an allowlist: private observations, local environments, downloaded benchmark bundles, generated artifacts and unreviewed workspace paths remain local.
 
+### Fixed
+
+- Journal review identities now include a canonical record-content hash, shared by CLI reports and the desktop backend. Reused integer IDs cannot transfer labels to different records; ambiguous legacy labels remain stored but do not bind to new identities.
+- Replay status detects a singleton lock retained by a surviving child after backend state loss. Unknown ownership/model/timing and unknown completion outcomes remain explicit; duplicate replay prevention is unchanged.
+
 ### Unchanged
 
 - Existing model paths, live launchers, installed Hermes plugin files, services, private captures and historical run artifacts are not moved, deleted, reconfigured or redeployed by this source cleanup.

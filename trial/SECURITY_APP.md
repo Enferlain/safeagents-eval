@@ -18,6 +18,14 @@ Verification: all **76 Python tests** and **39 Node UI tests** pass, with no new
 
 The catalogue, service, API and both UI copies are installed and byte-verified. Pre-change installed files and a hash manifest are backed up under `/home/imi/.hermes/cache/scratch/security-model-deploy-aofzekfo`. No app/backend, adapter, model or proxy process was restarted, and no configuration or enforcement setting changed. **The hosting desktop Python backend still needs an app restart, followed by live readout verification.** Live UI interaction, review of real captures and live model replay were not exercised in this pass.
 
+## Journal identity and replay recovery — source-only fixes
+
+Journal event IDs now use `journal:<path-hash>:<integer-id>:<canonical-content-sha256>` in both the desktop backend and CLI report. Changing any record content, even while reusing the integer ID and timestamp, produces a different identity. Key ordering, JSON whitespace and appending later records do not change an existing identity. Legacy path/number labels remain readable but are never automatically assigned to content-bound events; stale legacy event lookups/label requests return not found. Identical canonical records intentionally share an identity: this is content binding, not a new producer-side generation counter.
+
+Replay status probes the existing owner-only singleton lock without creating it or disturbing a surviving child's inherited lock. A held lock without an owned process handle reports **running**, with unknown ownership/model/start time. Once released, it reports idle with **outcome unknown**, not a fabricated completion or exit code. Invalid/unsafe locks report unavailable. Owned children retain their actual model/timing/exit status and duplicate-start prevention remains in force.
+
+These fixes are source-only; installed plugin files, live backends/models, configuration and enforcement have not been changed. Regression tests use isolated journal stores and harmless fixture children, never real private captures or model replay.
+
 ## Installed baseline (before correctness pass)
 
 Backend and Windows desktop UI installed; default-profile config enabled using `hermes config set`. Native `activate_plugin_now(..., in_process=False)` activated the three observation hooks in the running serve/gateway processes with `restart_required=false`; no app or gateway restart was performed. The API hot-mounted on first UI request.
