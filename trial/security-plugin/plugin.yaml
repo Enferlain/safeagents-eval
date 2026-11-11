@@ -1,0 +1,8 @@
+name: local-agent-security
+version: 0.1.0
+description: Local security observation, private review and native approval integration status.
+author: Imi
+provides_hooks:
+  - pre_api_request
+  - pre_tool_call
+  - post_tool_call

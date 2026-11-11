@@ -1,0 +1,11 @@
+safeagents-eval
+Copyright 2026 safeagents-eval contributors
+
+Original project contributions are licensed under the Apache License, Version 2.0.
+This is an independent evaluation/observation project, not an official release of
+Hugging Face SafeAgents, Hermes Agent, XAAB, PAGE, or Intern decision models.
+
+Third-party components, adapted material, data and outputs retain their own terms.
+See THIRD_PARTY_NOTICES.md; the project license does not supersede those terms.
+Model weights, downloaded benchmark bundles and private runtime records are not
+included in this source publication.

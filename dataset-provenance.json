@@ -1,0 +1,8 @@
+{
+  "source": "https://datasets-server.huggingface.co/rows",
+  "dataset": "harness-hub/safeagents-judge-bench",
+  "config": "default",
+  "split": "test",
+  "rows": 562,
+  "sha256": "b89c16a72f2b210867b7b76eafe3d9417255d8069a50d42a810e153a8be9553a"
+}

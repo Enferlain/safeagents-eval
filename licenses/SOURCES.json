@@ -1,0 +1,34 @@
+[
+  {
+    "path": "licenses/intern/Intern-Decision-0.8B-LICENSE.txt",
+    "source": "https://huggingface.co/internlm/Intern-Decision-0.8B/resolve/42457fafd13d10d0b0d9be46cb30a23caa409994/LICENSE",
+    "sha256": "c27d4b53f2965a962819c0ab91a4717aec2848d58a5163c19f1343b85f59ff7c"
+  },
+  {
+    "path": "licenses/intern/Intern-Decision-0.8B-LICENSE-QWEN.txt",
+    "source": "https://huggingface.co/internlm/Intern-Decision-0.8B/resolve/42457fafd13d10d0b0d9be46cb30a23caa409994/LICENSE-QWEN",
+    "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
+  },
+  {
+    "path": "licenses/intern/Intern-Decision-2B-LICENSE.txt",
+    "source": "https://huggingface.co/internlm/Intern-Decision-2B/resolve/85c5657708a09884ff9fd8d7f57789b410a97b33/LICENSE",
+    "sha256": "c27d4b53f2965a962819c0ab91a4717aec2848d58a5163c19f1343b85f59ff7c"
+  },
+  {
+    "path": "licenses/intern/Intern-Decision-2B-LICENSE-QWEN.txt",
+    "source": "https://huggingface.co/internlm/Intern-Decision-2B/resolve/85c5657708a09884ff9fd8d7f57789b410a97b33/LICENSE-QWEN",
+    "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a"
+  },
+  {
+    "path": "licenses/page/LICENSE.txt",
+    "source": "page/data/LICENSE.md",
+    "upstream_revision": "42b9bc836c8e8a7ac2b177c2657ed780de4c11ec",
+    "sha256": "ad0e6ef0b8e0e4994cedc32e7e9fb4fc7af143b5307650d1d739c59e6d8d6fee"
+  },
+  {
+    "path": "licenses/page/NOTICE.txt",
+    "source": "page/data/NOTICE.md",
+    "upstream_revision": "42b9bc836c8e8a7ac2b177c2657ed780de4c11ec",
+    "sha256": "b53840c9cf0d2f773f560ac7a70def76f3b65c4be0887b7580f5be469f8fc011"
+  }
+]

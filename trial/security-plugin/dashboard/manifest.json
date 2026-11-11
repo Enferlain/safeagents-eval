@@ -1,0 +1,8 @@
+{
+  "name": "local-agent-security",
+  "label": "Security",
+  "description": "Local log-only observation status and owner-initiated review",
+  "icon": "Shield",
+  "version": "0.1.0",
+  "api": "plugin_api.py"
+}
