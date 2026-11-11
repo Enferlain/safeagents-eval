@@ -43,7 +43,7 @@ class RunFixture:
         installed_spec = importlib.util.find_spec("safeagents")
         assert installed_spec is not None and installed_spec.origin is not None
         installed = Path(installed_spec.origin).parent
-        for name in ("runs.py", "monitor.py", "guard.py", "cli.py", "constants.py", "utils.py"):
+        for name in ("__init__.py", "runs.py", "monitor.py", "guard.py", "cli.py", "constants.py", "utils.py"):
             shutil.copyfile(installed / name, self.package / name)
         dist = self.site / "safeagents-0.0.1.dist-info"
         dist.mkdir()
@@ -71,7 +71,31 @@ class RunFixture:
         (self.p / "net/tcp").write_text(f"  sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n  0: 0100007F:{port:04X} 00000000:0000 0A 00000000:00000000 00:00000000 00000000 {os.getuid()} 0 67890 1\n")
         (self.p / "net/tcp6").write_text("header\n")
         self.log = self.run / "1.log"
-        self.banner = f"[safeagents] listening on http://{self.listen} -> {self.upstream} (log-only, atif-scan, judge http://127.0.0.1:18873, journal journal.jsonl)\n"
+        # Mirror cli.py's setup-string construction so plugin/no-scan/no-journal
+        # options produce the banner the real proxy would emit.
+        def value_of(name):
+            for index, token in enumerate(self.options):
+                if token == name and index + 1 < len(self.options):
+                    return self.options[index + 1]
+                if token.startswith(name + "="):
+                    return token.split("=", 1)[1]
+            return None
+        plugins, index = [], 0
+        while index < len(self.options):
+            token = self.options[index]
+            if token == "--plugin" and index + 1 < len(self.options):
+                plugins.append(self.options[index + 1]); index += 2; continue
+            if token.startswith("--plugin="):
+                plugins.append(token.split("=", 1)[1])
+            index += 1
+        parts = ["log-only" if "--log-only" in self.options else "block"]
+        if "--no-scan" not in self.options:
+            parts.append("atif-scan" + "".join(f" + {plugin}" for plugin in plugins))
+        if value_of("--judge-url"):
+            parts.append(f"judge {value_of('--judge-url')}")
+        if "--no-journal" not in self.options:
+            parts.append(f"journal {value_of('--journal') or 'journal.jsonl'}")
+        self.banner = f"[safeagents] listening on http://{self.listen} -> {self.upstream} (" + ", ".join(parts) + ")\n"
         self.log.write_text(self.banner)
         for number in (1, 2):
             self.p.joinpath(f"fd/{number}").symlink_to(self.log)
@@ -191,7 +215,11 @@ class ManagedMonitorTests(unittest.TestCase):
             "lock-not-process": lambda f: f.p.joinpath("fd/3").unlink(),
             "wrong-lock-owner": lambda f: f.p.joinpath("fdinfo/3").write_text("lock: 1: FLOCK ADVISORY WRITE 99999 00:00:1 0 EOF\n"),
             "wrong-env": lambda f: f.p.joinpath("environ").write_bytes(b"SAFEAGENTS_LOCK=/not/ours\0"),
-            "import-override": lambda f: f.p.joinpath("environ").write_bytes(f.p.joinpath("environ").read_bytes() + b"PYTHONPATH=/foreign\0"),
+            "import-override": lambda f: (
+                shutil.copytree(f.package, f.root / "shadow" / "safeagents"),
+                (f.root / "shadow" / "safeagents" / "runs.py").write_text("# overridden\n"),
+                f.p.joinpath("environ").write_bytes(f.p.joinpath("environ").read_bytes()
+                                                    + b"PYTHONPATH=" + os.fsencode(f.root / "shadow") + b"\0")),
             "unsafe-cwd": lambda f: f.cwd.chmod(0o777),
             "wrong-exe": lambda f: (f.p.joinpath("exe").unlink(), f.p.joinpath("exe").symlink_to("/not/python")),
             "wrong-namespace": lambda f: (f.p.joinpath("ns/net").unlink(), f.p.joinpath("ns/net").symlink_to("net:[999]")),
@@ -203,6 +231,141 @@ class ManagedMonitorTests(unittest.TestCase):
                 result = load_monitor().ManagedMonitor(f.run, f.proc).snapshot("safeagents-glm")
                 self.assertEqual(result["state"], "unverified")
                 self.assertIsNone(result["run"])
+
+    def test_repeated_plugins_keep_order_and_accept_file_path_specs(self):
+        f = self.fixture(options=["--log-only", "--plugin", "my_pack:checks",
+                                  "--plugin", "./detectors/pack.py:factory", "--plugin=third:mk",
+                                  "--judge-url", "http://127.0.0.1:18873", "--journal", "journal.jsonl"])
+        f.log.write_text(f.banner + f.call())
+        self.assertIn("atif-scan + my_pack:checks + ./detectors/pack.py:factory + third:mk", f.banner)
+        result = load_monitor().ManagedMonitor(f.run, f.proc).snapshot("safeagents-glm")
+        self.assertEqual(result["state"], "verified")
+        self.assertTrue(result["policy"]["scanner_enabled"])
+
+    def test_malformed_plugin_spec_never_verifies(self):
+        for spec in ("noseparator", ":factory", "module:", "with space:factory"):
+            with self.subTest(spec=spec):
+                f = self.fixture(options=["--log-only", "--plugin", spec,
+                                          "--judge-url", "http://127.0.0.1:18873", "--journal", "journal.jsonl"])
+                f.log.write_text(f.banner + f.call())
+                self.assertNotEqual(load_monitor().ManagedMonitor(f.run, f.proc).snapshot("safeagents-glm")["state"],
+                                    "verified")
+
+    def with_pythonpath(self, f, path):
+        f.p.joinpath("environ").write_bytes(f.p.joinpath("environ").read_bytes()
+                                            + b"PYTHONPATH=" + os.fsencode(path) + b"\0")
+
+    def test_runtime_error_block_counts_records_but_stays_degraded(self):
+        f = self.fixture()
+        chained = ("ERROR:    Exception in ASGI application\n"
+                   "Traceback (most recent call last):\n"
+                   "  File \"/fixture/app.py\", line 1, in app\n"
+                   "ValueError: first failure\n"
+                   "\n"
+                   "The above exception was the direct cause of the following exception:\n"
+                   "\n"
+                   "Traceback (most recent call last):\n"
+                   "  File \"/fixture/app.py\", line 2, in app\n"
+                   "RuntimeError: chained fixture failure\n"
+                   "\n")
+        f.log.write_text(f.banner + f.call() + chained + f.call(what="after-error"))
+        result = load_monitor().ManagedMonitor(f.run, f.proc).snapshot("safeagents-glm")
+        self.assertEqual(result["state"], "degraded")
+        self.assertEqual(result["runtime_errors"], 1, 'a chained exception is one runtime error')
+        self.assertEqual(result["guard"], {"reviewed": 2, "passed": 2, "warn": 0, "flagged": 0, "blocked": 0})
+        self.assertEqual(len(result["records"]), 2)
+
+    def test_malformed_or_forged_error_blocks_are_refused(self):
+        blocks = {
+            "no-traceback": "ERROR:    Exception in ASGI application\n",
+            "truncated": ("ERROR:    Exception in ASGI application\n"
+                          "Traceback (most recent call last):\n"
+                          "  File \"/fixture/app.py\", line 1, in app\n"),
+            "empty-terminator": ("ERROR:    Exception in ASGI application\n"
+                                 "Traceback (most recent call last):\n"
+                                 "  File \"/fixture/app.py\", line 1, in app\n"
+                                 "\n"),
+            "monitor-line-as-terminator": None,
+        }
+        for name, block in blocks.items():
+            with self.subTest(name=name):
+                f = self.fixture()
+                if name == "monitor-line-as-terminator":
+                    block = ("ERROR:    Exception in ASGI application\n"
+                             "Traceback (most recent call last):\n"
+                             "  File \"/fixture/app.py\", line 1, in app\n"
+                             + f.call(what="swallowed?") + f.call())
+                f.log.write_text(f.banner + f.call() + block)
+                result = load_monitor().ManagedMonitor(f.run, f.proc).snapshot("safeagents-glm")
+                self.assertEqual(result["state"], "degraded")
+                self.assertIsNone(result["guard"]["reviewed"],
+                                  'ambiguous evidence must not publish partial totals')
+
+    def test_pythonpath_entry_without_safeagents_verifies_the_resolved_install(self):
+        for entry in ("plain-dir", "missing-dir", "empty-entry"):
+            with self.subTest(entry=entry):
+                f = self.fixture()
+                if entry == "plain-dir":
+                    foreign = f.root / "foreign"; foreign.mkdir()
+                    self.with_pythonpath(f, foreign)
+                elif entry == "missing-dir":
+                    self.with_pythonpath(f, f.root / "absent")
+                else:
+                    self.with_pythonpath(f, "")
+                f.log.write_text(f.banner + f.call())
+                self.assertEqual(load_monitor().ManagedMonitor(f.run, f.proc).snapshot("safeagents-glm")["state"],
+                                 "verified")
+
+    def test_hardlinked_uv_style_install_verifies(self):
+        f = self.fixture()
+        # uv hardlinks venv files from its cache; content hashes remain the control.
+        for target in (f.site / "safeagents-0.0.1.dist-info/METADATA",
+                       f.package / "guard.py", f.package / "monitor.py"):
+            os.link(target, f.root / target.name)
+        f.log.write_text(f.banner + f.call())
+        self.assertEqual(load_monitor().ManagedMonitor(f.run, f.proc).snapshot("safeagents-glm")["state"],
+                         "verified")
+
+    def test_pythonpath_shadow_is_resolved_and_verified_by_content(self):
+        for tamper in (False, True):
+            with self.subTest(tamper=tamper):
+                f = self.fixture()
+                shadow = f.root / "shadow"
+                shutil.copytree(f.package, shadow / "safeagents")
+                shutil.copytree(f.site / "safeagents-0.0.1.dist-info", shadow / "safeagents-0.0.1.dist-info")
+                if tamper:
+                    (shadow / "safeagents" / "guard.py").write_text("# different source\n")
+                self.with_pythonpath(f, shadow)
+                f.log.write_text(f.banner + f.call())
+                state = load_monitor().ManagedMonitor(f.run, f.proc).snapshot("safeagents-glm")["state"]
+                self.assertEqual(state, "unverified" if tamper else "verified")
+
+    def test_pythonpath_file_entry_is_refused(self):
+        f = self.fixture()
+        marker = f.root / "marker.txt"; marker.write_text("x")
+        self.with_pythonpath(f, marker)
+        f.log.write_text(f.banner + f.call())
+        self.assertNotEqual(load_monitor().ManagedMonitor(f.run, f.proc).snapshot("safeagents-glm")["state"],
+                            "verified")
+
+    def test_pythonhome_is_still_refused(self):
+        f = self.fixture()
+        f.p.joinpath("environ").write_bytes(f.p.joinpath("environ").read_bytes() + b"PYTHONHOME=/elsewhere\0")
+        f.log.write_text(f.banner + f.call())
+        self.assertEqual(load_monitor().ManagedMonitor(f.run, f.proc).snapshot("safeagents-glm")["state"],
+                         "unverified")
+
+    def test_cwd_source_checkout_resolves_first_and_verifies_by_content(self):
+        for tamper in (False, True):
+            with self.subTest(tamper=tamper):
+                f = self.fixture()
+                shutil.copytree(f.package, f.cwd / "safeagents")
+                shutil.copytree(f.site / "safeagents-0.0.1.dist-info", f.cwd / "safeagents-0.0.1.dist-info")
+                if tamper:
+                    (f.cwd / "safeagents" / "monitor.py").write_text("# different source\n")
+                f.log.write_text(f.banner + f.call())
+                state = load_monitor().ManagedMonitor(f.run, f.proc).snapshot("safeagents-glm")["state"]
+                self.assertEqual(state, "unverified" if tamper else "verified")
 
     def test_unsupported_install_or_malformed_run_never_claims_verification(self):
         for case in ("version", "monitor-source", "guard-source", "bool-id", "bool-pid", "nan-start", "negative-start", "options-string", "null-record", "duplicate-field"):
@@ -262,7 +425,10 @@ class ManagedMonitorTests(unittest.TestCase):
                 elif case == "unknown-line":
                     text += "unsupported mysterious output\n"
                 elif case == "traceback":
-                    text += "ERROR: Exception in ASGI application\nTraceback (most recent call last):\nPermissionError: journal append failed\n"
+                    # A traceback without the uvicorn ERROR header is not a
+                    # recognizable runtime-error record: refuse it. (Well-formed
+                    # ERROR blocks are covered by the runtime-error tests.)
+                    text += "Traceback (most recent call last):\nPermissionError: journal append failed\n"
                 elif case == "oversize":
                     text += "x" * (8 * 1024 * 1024)
                 elif case == "control-character":

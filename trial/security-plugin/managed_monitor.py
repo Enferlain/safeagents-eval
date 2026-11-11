@@ -43,21 +43,24 @@ def _directory(path, private=False):
 
 
 @contextmanager
-def _file(path, private_parent=False):
+def _file(path, private_parent=False, shared=False):
     path = Path(path)
     with _directory(path.parent, private=private_parent) as directory:
         fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
         try:
             info = os.fstat(fd)
+            # shared=True admits uv-style hardlinked installs (nlink > 1) for
+            # version-pinned package sources; integrity there is the content hash,
+            # not link exclusivity. Run artifacts keep requiring nlink == 1.
             _require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
-                     and not info.st_mode & 0o022 and info.st_nlink == 1)
+                     and not info.st_mode & 0o022 and (shared or info.st_nlink == 1))
             yield fd
         finally:
             os.close(fd)
 
 
-def _read(path, limit=8 * 1024 * 1024, private_parent=False):
-    with _file(path, private_parent) as fd:
+def _read(path, limit=8 * 1024 * 1024, private_parent=False, shared=False):
+    with _file(path, private_parent, shared) as fd:
         before = os.fstat(fd)
         _require(before.st_size <= limit)
         chunks = []
@@ -118,7 +121,7 @@ def _process(p, proc_root, record, argv, lock):
             _require(key not in env)
             env[key] = value
     _require(env.get(b"SAFEAGENTS_LOCK") == os.fsencode(lock))
-    _require(not env.get(b"PYTHONPATH") and not env.get(b"PYTHONHOME"))
+    _require(not env.get(b"PYTHONHOME"))
     cwd = Path(os.readlink(p / "cwd"))
     with _directory(cwd):
         pass
@@ -145,7 +148,7 @@ def _process(p, proc_root, record, argv, lock):
              and f"socket:[{listeners[0][9]}]" in sockets)
     home = os.fsdecode(env[b"HOME"]) if b"HOME" in env else pwd.getpwuid(os.getuid()).pw_dir
     _require(Path(home).is_absolute())
-    return cwd, started, env.get(b"TZ"), ticks, home
+    return cwd, started, env.get(b"TZ"), ticks, home, env.get(b"PYTHONPATH")
 
 
 ROUTES = {"safeagents-glm": ("127.0.0.1:8788", "https://api.z.ai"),
@@ -183,24 +186,64 @@ def _json(data):
     return json.loads(data, object_pairs_hook=unique)
 
 
-def _installed(executable, cwd):
-    """Only the inspected 0.0.1 piped format is supported; do not run the venv."""
-    _require(not (cwd / "safeagents").exists() and not (cwd / "safeagents.py").exists())
-    sites = list(Path(executable).parent.parent.glob("lib/python*/site-packages/safeagents"))
-    _require(len(sites) == 1)
-    package = sites[0]
+def _verify_package(package):
+    """Only the inspected 0.0.1 piped layout is supported; do not run the venv."""
     metadata = list(package.parent.glob("safeagents-*.dist-info/METADATA"))
     _require(len(metadata) == 1)
-    _require(re.findall(rb"^Version: (.+)$", _read(metadata[0], 262144), re.M) == [b"0.0.1"])
+    _require(re.findall(rb"^Version: (.+)$", _read(metadata[0], 262144, shared=True), re.M) == [b"0.0.1"])
     for name, digest in SUPPORTED_SOURCE.items():
-        _require(hashlib.sha256(_read(package / name, 262144)).hexdigest() == digest)
+        _require(hashlib.sha256(_read(package / name, 262144, shared=True)).hexdigest() == digest)
+
+
+def _importable(root):
+    """The package Python would import from this root, or None."""
+    try:
+        (root / "safeagents.py").lstat()
+    except OSError:
+        pass
+    else:
+        raise EvidenceError()  # single-module layout: unsupported, never guessed
+    package = root / "safeagents"
+    try:
+        info = package.lstat()
+    except OSError:
+        return None
+    _require(stat.S_ISDIR(info.st_mode))  # a symlinked package cannot be walked safely
+    _require((package / "__init__.py").exists())
+    return package
+
+
+def _installed(executable, cwd, pythonpath):
+    """Verify the SafeAgents package this interpreter statically resolves to.
+
+    Import resolution for ``-m``: the working directory, then PYTHONPATH
+    entries (relative entries resolve against the cwd, missing entries are
+    skipped, empty entries repeat the cwd), then the interpreter's own
+    site-packages. The first importable package wins and must be the
+    inspected 0.0.1 source. Nothing is executed; ambiguity stays unverified.
+    """
+    roots = [cwd]
+    for item in pythonpath.split(os.fsencode(os.pathsep)) if pythonpath else []:
+        entry = Path(os.fsdecode(item)) if item else cwd
+        if not entry.is_absolute():
+            entry = cwd / entry
+        _require(entry.is_dir() or not entry.exists())  # a file entry is not an import root
+        roots.append(entry)
+    sites = list(Path(executable).parent.parent.glob("lib/python*/site-packages"))
+    _require(len(sites) == 1)
+    roots.append(sites[0])
+    for root in roots:
+        package = _importable(root)
+        if package is not None:
+            return _verify_package(package)
+    raise EvidenceError()
 
 
 def _empty():
     return {"state": "unverified", "scope": "current_managed_run",
             "detail": "Managed run could not be verified.", "run": None, "policy": None,
             "guard": dict.fromkeys(GUARD_KEYS), "judge": dict.fromkeys(JUDGE_KEYS),
-            "records": [], "journal_path": None}
+            "records": [], "runtime_errors": None, "journal_path": None}
 
 
 def _trusted_journal(path):
@@ -219,23 +262,38 @@ def _trusted_journal(path):
 
 def _options(options, cwd, home):
     flags = {"--log-only", "--no-scan", "--no-journal", "--judge-fail-closed"}
-    values = {"--judge-url", "--journal", "--block-severity", "--judge-model", "--judge-timeout", "--allow-host"}
+    values = {"--judge-url", "--journal", "--block-severity", "--judge-model", "--judge-timeout",
+              "--allow-host", "--plugin"}
+    repeated = {"--plugin"}  # repeatable atif-scan checks, order preserved
     parsed = {}
     index = 0
     while index < len(options):
         name = options[index]
         if "=" in name and name.split("=", 1)[0] in values:
             name, value = name.split("=", 1)
-            parsed[name] = value
+            if name in repeated:
+                parsed.setdefault(name, []).append(value)
+            else:
+                parsed[name] = value
             index += 1
         elif name in flags:
             parsed[name] = True
             index += 1
         elif name in values and index + 1 < len(options):
-            parsed[name] = options[index + 1]
+            value = options[index + 1]
+            if name in repeated:
+                parsed.setdefault(name, []).append(value)
+            else:
+                parsed[name] = value
             index += 2
         else:
             raise EvidenceError()
+    plugins = parsed.get("--plugin", [])
+    _require(isinstance(plugins, list))
+    for spec in plugins:
+        # MODULE:FACTORY as atif-scan takes it; a module may also be a file path.
+        _require(isinstance(spec, str) and len(spec) <= 4096
+                 and re.fullmatch(r"[^\s:]+:[^\s:]+", spec) is not None)
     severity = parsed.get("--block-severity", "high")
     _require(severity in {"low", "medium", "high", "critical"})
     policy = {"mode": "log-only" if parsed.get("--log-only") else "enforcing",
@@ -255,7 +313,7 @@ def _options(options, cwd, home):
         _trusted_journal(journal)
     setup = ["log-only" if policy["mode"] == "log-only" else "block"]
     if policy["scanner_enabled"]:
-        setup.append("atif-scan")
+        setup.append("atif-scan" + "".join(f" + {plugin}" for plugin in plugins))
     if policy["judge_enabled"]:
         setup.append(f"judge {parsed['--judge-url']}")
     if policy["journal_enabled"]:
@@ -408,8 +466,8 @@ class ManagedMonitor:
                 pass
             else:
                 raise EvidenceError()
-        cwd, started, tz, ticks, home = _process(p, self.proc_root, record, argv, lock)
-        _installed(argv[0], cwd)
+        cwd, started, tz, ticks, home, pythonpath = _process(p, self.proc_root, record, argv, lock)
+        _installed(argv[0], cwd, pythonpath)
         policy, journal, setup = _options(record["options"], cwd, home)
         log = self.run_dir / f"{record['id']}.log"
         _require(record["log"] == str(log))
@@ -437,13 +495,46 @@ class ManagedMonitor:
         records = []
         entries = None
         seen = set()
+        runtime_errors = 0
         zone, now = _zone(record["_tz"]), time.time()
         index = 1
         while index < len(lines):
             line = lines[index]
             m = CALL.fullmatch(line)
             if m is None:
-                raise EvidenceError()
+                # uvicorn logs ASGI failures as an ERROR header plus a Traceback
+                # block. Those are proxy runtime errors, not Monitor records:
+                # count them, never render them, and stay degraded.
+                if not line.startswith("ERROR:") or index + 1 >= len(lines) \
+                        or lines[index + 1] != "Traceback (most recent call last):":
+                    raise EvidenceError()
+                end = index + 2
+                while end < len(lines) and (lines[end].startswith("  ") or lines[end].startswith("\t")):
+                    end += 1
+                # A Monitor-format terminator is ambiguous evidence: refuse
+                # rather than risk swallowing a record into an error block.
+                if end >= len(lines) or not lines[end] or CALL.fullmatch(lines[end]):
+                    raise EvidenceError()
+                runtime_errors += 1
+                index = end + 1
+
+                def skip_blank(i):
+                    # uvicorn separates traceback output with single blank lines;
+                    # a blank line anywhere else stays malformed.
+                    return i + 1 if i < len(lines) and not lines[i] else i
+                index = skip_blank(index)
+                # Python chains exceptions ("... the direct cause of the following
+                # exception:"): each chain adds one separator + traceback block.
+                while index < len(lines) and lines[index].startswith("The above exception") \
+                        and lines[index].endswith("exception:"):
+                    index = skip_blank(index + 1)
+                    _require(index < len(lines) and lines[index] == "Traceback (most recent call last):")
+                    end = index + 1
+                    while end < len(lines) and (lines[end].startswith("  ") or lines[end].startswith("\t")):
+                        end += 1
+                    _require(end < len(lines) and lines[end] and not CALL.fullmatch(lines[end]))
+                    index = skip_blank(end + 1)
+                continue
             clock, ref, tag, tool, body = m.groups()
             body = body or ""
             stamp = _clock(clock, record["_process_started"], now, zone)
@@ -467,7 +558,7 @@ class ManagedMonitor:
                 consumed = len(logical)
             records.append({"call_id": call_id, "verdict": VERDICTS[tag], "judge_outcome": outcome, "time": stamp})
             index += consumed
-        return records
+        return records, runtime_errors
 
     def snapshot(self, route=None):
         # HTTP polling can overlap; an older reader must not poison watermarks.
@@ -502,7 +593,7 @@ class ManagedMonitor:
                 if invalid or len(data) < size or hashlib.sha256(data[:size]).hexdigest() != digest:
                     self._history[route] = (generation, size, digest, True)
                     raise EvidenceError()
-            records = self._parse(data.decode("utf-8"), record, policy, journal)
+            records, runtime_errors = self._parse(data.decode("utf-8"), record, policy, journal)
             try:
                 after = self._identity(self.run_dir / f"{record['id']}.json", route)
                 _require(after == candidates[0])
@@ -511,6 +602,7 @@ class ManagedMonitor:
             _require(log_signature == _signature(log.stat()))
             self._history[route] = (generation, len(data), hashlib.sha256(data).hexdigest(), False)
             result["records"] = records
+            result["runtime_errors"] = runtime_errors
             result["guard"] = dict.fromkeys(GUARD_KEYS, 0)
             result["guard"]["reviewed"] = len(records)
             for row in records:
@@ -525,7 +617,12 @@ class ManagedMonitor:
                     last = {"time": row["time"], "outcome": outcome}
                     result["judge"]["last_consultation"] = last
                     result["judge"]["last_failure" if outcome == "error" else "last_success"] = last
-            result.update(state="verified", detail="Current managed run monitoring verified.")
+            if runtime_errors:
+                result.update(state="degraded",
+                              detail=f"Managed run verified; {runtime_errors} proxy runtime error(s) recorded. "
+                                     "Totals cover recorded completed reviews only.")
+            else:
+                result.update(state="verified", detail="Current managed run monitoring verified.")
         except (OSError, ValueError, KeyError, TypeError, IndexError, OverflowError, RecursionError):
             pass
         return result

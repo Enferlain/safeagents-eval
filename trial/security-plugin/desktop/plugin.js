@@ -62,7 +62,7 @@ function liveJudgeLabel(judge, error, stale) {
   return judge?.state === 'available' && label !== 'Unknown model' ? `${label} · Ready` : 'Unknown model';
 }
 function healthComponents(status) {
-  const labels = { proxy_glm: 'GLM observation proxy', proxy_local: 'Local observation proxy', decision: 'Local decision model', capture: 'Observation adapter', store: 'Private capture store', activity: 'Activity records', review: 'Review records', replay: 'Replay records' };
+  const labels = { proxy_glm: 'GLM observation proxy', proxy_local: 'Local observation proxy', decision: 'Local decision model', capture: 'Observation adapter', store: 'Private capture store', recorder: 'Capture recording', activity: 'Activity records', review: 'Review records', replay: 'Replay records' };
   const components = [...(Array.isArray(status?.components) ? status.components : []),
     ...Object.entries(status?.subsystems || {}).map(([id, value]) => ({ ...value, id, label: labels[id] || id }))];
   for (const [id, label] of Object.entries(labels)) if (!components.some(component => component.id === id)) components.push({ id, label });
@@ -72,7 +72,7 @@ function componentState(component, error, stale) {
   return error ? 'Unknown (request failed)' : stale ? 'Unknown (stale)' : component.healthy === true ? 'Healthy' : component.healthy === false ? 'Unavailable' : 'Unknown';
 }
 function healthGroups(components, observation, error, stale) {
-  const storage = component => ['store', 'activity', 'review', 'replay'].includes(component.id);
+  const storage = component => ['store', 'activity', 'review', 'replay', 'recorder'].includes(component.id);
   const routeIds = ['proxy_glm', 'proxy_local', 'decision', 'capture'];
   // Only these backend states represent fresh native route evidence. Provider
   // alone can be a stale or database-only last-recorded value, not a live route.
@@ -356,7 +356,9 @@ function SecurityPanel({ ctx, scope, status }) {
   const hasReplayJob = !!startingReplay || replay.data?.model != null || replay.data?.state === 'running';
   const judgeLabel = liveJudgeLabel(status.data?.judge, status.error, view.stale);
   const attention = statusUnavailable ? null : attentionView(status.data?.attention);
-  const attentionEvents = Array.isArray(attention?.events) ? attention.events.filter(event => event && typeof event.id === 'string' && (includeProbes || !/verification|probe/i.test(event.origin || ''))) : [];
+  const attentionEvents = Array.isArray(attention?.events) ? attention.events.filter(event => event && typeof event.id === 'string'
+    && ['suspicious', 'flagged', 'blocked'].includes(event.verdict)
+    && (includeProbes || !/verification|probe/i.test(event.origin || ''))) : [];
   // Attention is an unassociated detector feed, never a native session join.
   const attentionRows = attentionEvents.map(event => ({ key: `attention:${event.id}`, attention: true,
     events: [{ ...event, _attention: true }], sources: [event.source || 'safeagents'], scores: eventScores(event), reviewable: event.reviewable === true ? [event] : [] }));
@@ -426,7 +428,7 @@ function SecurityPanel({ ctx, scope, status }) {
     status.error ? jsx('div', { role: 'alert', children: `Coverage request failed: ${status.error.message || status.error}` }) : null,
     jsx('div', { 'aria-label': 'Health summary', style: { fontSize: 11, marginTop: 8 }, children: healthGroups(components, status.data?.observation, status.error, view.stale).map(group => {
       const healthy = group.components.filter(component => componentState(component, status.error, view.stale) === 'Healthy').length;
-      const names = { proxy_glm: 'GLM proxy', proxy_local: 'Local proxy', decision: 'Decision model', capture: 'Capture adapter', store: 'Private captures', activity: 'Activity records', review: 'Review records', replay: 'Replay records' };
+      const names = { proxy_glm: 'GLM proxy', proxy_local: 'Local proxy', decision: 'Decision model', capture: 'Capture adapter', store: 'Private captures', recorder: 'Recorder', activity: 'Activity records', review: 'Review records', replay: 'Replay records' };
       return jsxs('div', { 'aria-label': group.label, style: { padding: '7px 0', borderTop: '1px solid var(--ui-stroke-secondary)' }, children: [
         jsxs('div', { style: { ...flow, justifyContent: 'space-between', gap: 6, marginBottom: 3 }, children: [
           jsxs('span', { style: { ...flow, ...muted, gap: 6, fontWeight: 500, fontSize: 10 }, children: [jsx(Codicon, { name: group.label === 'Storage' ? 'database' : group.label === 'Components' ? 'server' : 'git-branch', size: 12, 'aria-hidden': true }), jsx('span', { children: group.label })] }),
@@ -446,6 +448,7 @@ function SecurityPanel({ ctx, scope, status }) {
       jsx('div', { style: muted, children: `Last-recorded provider: ${status.data?.observation?.provider || 'Unknown'}` }),
       jsx('div', { style: muted, children: `Last checked: ${view.checked}${view.stale ? ' · stale / unavailable' : ''}` }),
       jsx('div', { style: muted, children: `Live judge: ${status.data?.judge?.detail || 'No verified model identity recorded'}` }),
+      jsx('div', { style: muted, children: `Failed judge attempts: ${Number.isInteger(attention?.failed_judge_attempts) ? attention.failed_judge_attempts : 'Unknown'} · recorded, excluded from review${Number.isInteger(status.data?.judge?.capture_errors) ? ` · capture write errors: ${status.data.judge.capture_errors}` : ''}` }),
       Number.isFinite(status.data?.judge?.threshold) ? jsx('div', { style: muted, children: `Live judge threshold: ${status.data.judge.threshold} · provisional` }) : null,
       ...components.map(component => jsx('div', { style: muted, children: `${component.label}: ${componentState(component, status.error, view.stale)}${status.error || view.stale ? ` · Last recorded: ${componentState(component, null, false)}` : ''} · ${component.detail || 'No diagnostics recorded'}` }, component.id)),
       jsx('p', { style: muted, children: 'This panel adds no permission system.' }),

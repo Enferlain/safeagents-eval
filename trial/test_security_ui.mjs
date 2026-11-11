@@ -1324,6 +1324,34 @@ test('attention capture capabilities reject retained inspection when the canonic
   assert.equal(h.calls.length, 1);
 });
 
+test('recorder groups under Storage and technical failures stay out of review findings', () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  h.data.status.components = [{ id: 'recorder', label: 'Capture recording', healthy: false,
+    write_errors: 1, detail: 'Capture recording state; historical write errors do not imply inference failure.' }];
+  h.data.status.attention = { healthy: true, scope: 'stored_history', needs_review: 1, failed_judge_attempts: 2,
+    events: [attentionEvent(), attentionEvent({ id: 'capture:error', verdict: null, signals: [] })] };
+  const tree = h.draw(), nodes = h.nodes(tree);
+  const storage = nodes.find(n => n.props['aria-label'] === 'Storage');
+  const components = nodes.find(n => n.props['aria-label'] === 'Components');
+  assert.ok(storage, 'Storage group exists');
+  assert.ok(h.nodes(storage).some(n => n.props.children === 'Recorder'),
+    'recorder appears under Storage with its short label (accessible label keeps the full name)');
+  assert.ok(!h.nodes(components).some(n => n.props.children === 'Recorder'),
+    'recorder is not grouped under Components');
+  const attention = nodes.find(n => n.props['aria-label'] === 'Needs review');
+  assert.equal(h.nodes(attention).filter(n => n.type === 'article').length, 1,
+    'a technical capture failure is not rendered as a review finding');
+  assert.match(visibleText(attention), /1 needs review/);
+  const diagnostics = nodes.find(n => n.type === 'details' && n.nodes?.('summary') === undefined
+    && h.nodes(n).some(child => child.type === 'summary' && child.props.children === 'Diagnostics'));
+  diagnostics.props.open = true;
+  assert.match(visibleText(diagnostics), /Failed judge attempts: 2 · recorded, excluded from review/);
+  h.data.status.attention.failed_judge_attempts = null; h.draw();
+  const reopened = h.nodes(h.draw()).find(n => n.type === 'details' && h.nodes(n).some(child => child.type === 'summary' && child.props.children === 'Diagnostics'));
+  reopened.props.open = true;
+  assert.match(visibleText(reopened), /Failed judge attempts: Unknown/);
+});
+
 test('invalid attention envelopes fail closed locally without erasing independent Guard and Ready judge evidence', async () => {
   const h = harness(); h.c.plugin.register(h.ctx);
   h.data.status.monitoring = monitoringFixture();

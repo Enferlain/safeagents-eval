@@ -353,9 +353,14 @@ class SecurityService:
     @staticmethod
     def _attention(events, subsystems, monitoring):
         healthy = events is not None and subsystems['review']['healthy'] is True
-        rows = [event for event in (events or []) if event['source'] == 'safeagents'
-                and event['origin'] != 'verification'
-                and (event.get('verdict') in ('suspicious', 'flagged', 'blocked') or event['status'] == 'error')]
+        pool = [event for event in (events or []) if event['source'] == 'safeagents'
+                and event['origin'] != 'verification']
+        # Only SafeAgents call judgments need human review. Technical capture
+        # failures (judge/inference/parsing/connectivity) are health, not
+        # findings; the adapter's write errors are tracked separately.
+        rows = [event for event in pool if event.get('verdict') in ('suspicious', 'flagged', 'blocked')]
+        failed_judge_attempts = sum(event.get('verdict') is None and event['status'] == 'error'
+                                    for event in pool)
         scope = 'stored_history'
         journal_path = monitoring.get('journal_path')
         if monitoring.get('state') in ('verified', 'degraded') and journal_path:
@@ -378,6 +383,8 @@ class SecurityService:
             rows = list({event['id']: event for event in selected}.values())
             healthy = healthy and monitoring['state'] == 'verified'
         return {'healthy': healthy, 'scope': scope, 'total_events': len(rows), 'has_more': len(rows) > 100,
+                # The capture store is not run-scoped; no run-scoped failure total is claimed.
+                'failed_judge_attempts': None if scope == 'current_managed_run' else failed_judge_attempts,
                 'needs_review': sum(event.get('human_label') is None or event.get('review_conflict') is True
                                     for event in rows) if healthy else None,
                 'events': sorted(rows, key=lambda row: (row['time'], row['id']), reverse=True)[:100]}
@@ -407,6 +414,11 @@ class SecurityService:
             'state': 'not_covered', 'provider': None, 'detail': 'Default profile only; this profile is not covered.'}
         healthy = records['calls'] is not None
         monitoring = self._monitoring(observation.get('provider'))
+        # Full observation requires verified managed-run identity for the watched
+        # route; a reachable proxy alone proves neither identity nor coverage.
+        if observation.get('state') == 'observing' and monitoring.get('state') != 'verified':
+            observation = {**observation, 'state': 'degraded',
+                           'detail': observation['detail'] + ' Managed-run identity unverified; route reachable but not proven.'}
         attention = self._attention(events, subsystems, monitoring)
         return {'observed_at': time.time(), 'observation': observation,
                 'monitoring': {key: value for key, value in monitoring.items() if key not in ('records', 'journal_path')},

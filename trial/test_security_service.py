@@ -245,7 +245,10 @@ class SecurityTests(unittest.TestCase):
         self.write('security-routes.jsonl', [route])
         healthy = [dict(id=i, label=i, healthy=True, detail='Available.')
                    for i in ('proxy_glm', 'proxy_local', 'decision', 'capture')]
-        with patch.object(self.service, '_health', return_value=healthy):
+        verified_run = {'state': 'verified', 'scope': 'current_managed_run', 'run': None, 'policy': None,
+                        'guard': {}, 'judge': {}, 'records': [], 'journal_path': None}
+        with patch.object(self.service, '_health', return_value=healthy), \
+             patch.object(self.service, '_monitoring', return_value=verified_run):
             result = self.service.status('session-a')
         self.assertEqual(result['observation']['state'], 'observing')
         self.assertIn('last request', result['observation']['detail'].lower())
@@ -425,11 +428,14 @@ class SecurityTests(unittest.TestCase):
         self.write('security-routes.jsonl', [dict(session_id='s', origin='native_hook', time=time.time(),
                                                 route='safeagents-glm', api_mode='chat')])
         health = [dict(id=i, healthy=True) for i in ('proxy_glm', 'decision', 'capture')]
+        verified_run = {'state': 'verified', 'scope': 'current_managed_run', 'run': None, 'policy': None,
+                        'guard': {}, 'judge': {}, 'records': [], 'journal_path': None}
         for name, subsystem in [('qev.jsonl', 'replay'), ('labels.jsonl', 'review'), ('calls.jsonl', 'activity')]:
             with self.subTest(name=name):
                 path = self.write(name, [dict(self.capture(), capture_id=[], label=[])])
                 path.write_text('{TOPSECRET invalid\n')
-                with patch.object(self.service, '_health', return_value=health):
+                with patch.object(self.service, '_health', return_value=health), \
+                     patch.object(self.service, '_monitoring', return_value=verified_run):
                     result = self.client().get('/status?session_id=s')
                 self.assertEqual(result.status_code, 200)
                 data = result.json()

@@ -154,8 +154,9 @@ class MonitoringTests(unittest.TestCase):
         with patch.object(self.service, '_health', return_value=[]):
             attention = self.service.status()['attention']
         self.assertTrue(attention['healthy'])
-        self.assertEqual(attention['needs_review'], 2)
-        self.assertEqual(len(attention['events']), 2)
+        self.assertEqual(attention['needs_review'], 1, 'only the journal finding needs human review')
+        self.assertEqual(attention['failed_judge_attempts'], 1)
+        self.assertEqual(len(attention['events']), 1, 'technical capture errors are not review findings')
         # Exercise the actual frontend validator against the real backend output,
         # not a handwritten event fixture that can omit producer differences.
         plugin = (ROOT / 'security-plugin/desktop/plugin.js').read_text()
@@ -165,7 +166,8 @@ class MonitoringTests(unittest.TestCase):
                                   + 'process.stdin.on("end", () => process.exit(attentionView(JSON.parse(data)) ? 0 : 1));'],
                                  input=json.dumps(attention), text=True, capture_output=True)
         self.assertEqual(checked.returncode, 0, 'ordinary capture errors must not erase unrelated findings')
-        error = next(event for event in attention['events'] if event['id'] == capture['id'])
+        error = next(event for event in self.service.events(all_sessions=True)['events']
+                     if event['id'] == capture['id'])
         self.assertEqual(error['signals'], [])
         self.assertIsNone(error['verdict'])
         self.assertEqual(error['judge_consultation'], 'unknown')
@@ -185,6 +187,8 @@ class MonitoringTests(unittest.TestCase):
     def test_attention_joins_only_unique_current_run_journal_records(self):
         self.write('journal.jsonl', [dict(id=3, time=101., verdict='flagged', judge=None)], journal=True)
         self.write('local-journal.jsonl', [dict(id=3, time=101., verdict='flagged', judge=None)], journal=True)
+        self.write('calls.jsonl', [dict(self.capture(), error='TimeoutError', payload=None, score=None,
+                                        input_sha256=None, policy_sha256=None)])
         monitoring = {'state': 'verified', 'scope': 'current_managed_run', 'run': {'started_at': 90.},
                       'guard': {'reviewed': 1}, 'judge': {},
                       'journal_path': str(self.repo / 'trial/journal.jsonl'),
@@ -196,6 +200,26 @@ class MonitoringTests(unittest.TestCase):
         self.assertEqual(len(status['attention']['events']), 1)
         self.assertNotIn('journal_path', status['monitoring'])
         self.assertNotIn('records', status['monitoring'])
+        self.assertIsNone(status['attention']['failed_judge_attempts'],
+                          'the capture store is not run-scoped; no run-scoped failure total is claimed')
+
+    def test_observing_headline_requires_verified_managed_run_identity(self):
+        self.write('security-routes.jsonl', [dict(session_id='s', origin='native_hook',
+                   route='safeagents-glm', api_mode='chat', time=time.time())])
+        components = [{'id': name, 'healthy': True} for name in ('proxy_glm', 'decision', 'capture')]
+        unverified = {'state': 'unverified', 'scope': 'current_managed_run', 'run': None, 'policy': None,
+                      'guard': {k: None for k in ('reviewed', 'passed', 'warn', 'flagged', 'blocked')},
+                      'judge': {}, 'records': [], 'journal_path': None}
+        verified = dict(unverified, state='verified')
+        with patch.object(self.service, '_health', return_value=components), \
+             patch.object(self.service, '_monitoring', return_value=unverified):
+            degraded = self.service.status('s')['observation']
+        self.assertEqual(degraded['state'], 'degraded')
+        self.assertIn('unverified', degraded['detail'].lower())
+        with patch.object(self.service, '_health', return_value=components), \
+             patch.object(self.service, '_monitoring', return_value=verified):
+            observing = self.service.status('s')['observation']
+        self.assertEqual(observing['state'], 'observing')
 
 
     def test_ambiguous_capture_links_are_conflicts_not_two_matches(self):

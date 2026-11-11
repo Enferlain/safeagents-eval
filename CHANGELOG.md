@@ -7,6 +7,8 @@ All notable changes are recorded here. This project follows the [Keep a Changelo
 ### Added
 
 - Read-only current-managed-run telemetry for recorded completed SafeAgents reviews and judge consultations, with process/lock/listener/log/source validation and unknown totals for incomplete evidence. Native provider attempts remain separate from proxy receipts.
+- Repeatable `--plugin` scanner options (order-preserving, file-path specs) in managed-run verification, and static import-resolution provenance: the first importable SafeAgents package on the process's path must hash-match the supported source; PYTHONHOME stays refused and uv-style hardlinked installs verify by content.
+- Observation: Observing now requires a verified managed run for the watched route; an unverified-but-reachable proxy reports Degraded.
 - Security Guard, Judge and Needs review sections with explicit run/history scopes, sanitized findings, and separate Evaluation & audit totals.
 - Apache-2.0 license for original project contributions, with separate third-party notices and benchmark licensing boundaries.
 - Root project guide, development instructions and benchmark/runtime prerequisites.
@@ -25,7 +27,9 @@ All notable changes are recorded here. This project follows the [Keep a Changelo
 ### Fixed
 
 - Capture-recording write failures no longer degrade independent judge readiness or observation-route health.
+- Recorded uvicorn runtime errors (including chained tracebacks) no longer erase corroborated review totals; they keep the run degraded and are counted, never rendered.
 - A single failed capture record no longer suppresses the whole Needs-review feed; capture-error findings share the attention schema with journal findings.
+- Technical capture failures are excluded from Needs review and surfaced as a failed-judge-attempts count in Diagnostics; the recorder component groups under Storage.
 - Proven journal/capture aliases share one finding and preserve review labels; review disagreements and association conflicts remain distinct. Ambiguous duplicate capture IDs cannot be inspected.
 - Journal review identities now include a canonical record-content hash, shared by CLI reports and the desktop backend. Reused integer IDs cannot transfer labels to different records; ambiguous legacy labels remain stored but do not bind to new identities.
 - Replay status detects a singleton lock retained by a surviving child after backend state loss. Unknown ownership/model/timing and unknown completion outcomes remain explicit; duplicate replay prevention is unchanged.
