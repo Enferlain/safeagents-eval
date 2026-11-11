@@ -6,6 +6,8 @@ All notable changes are recorded here. This project follows the [Keep a Changelo
 
 ### Added
 
+- Read-only current-managed-run telemetry for recorded completed SafeAgents reviews and judge consultations, with process/lock/listener/log/source validation and unknown totals for incomplete evidence. Native provider attempts remain separate from proxy receipts.
+- Security Guard, Judge and Needs review sections with explicit run/history scopes, sanitized findings, and separate Evaluation & audit totals.
 - Apache-2.0 license for original project contributions, with separate third-party notices and benchmark licensing boundaries.
 - Root project guide, development instructions and benchmark/runtime prerequisites.
 - Locked Python dependency graph, including an immutable SafeAgents upstream commit.
@@ -22,6 +24,9 @@ All notable changes are recorded here. This project follows the [Keep a Changelo
 
 ### Fixed
 
+- Capture-recording write failures no longer degrade independent judge readiness or observation-route health.
+- A single failed capture record no longer suppresses the whole Needs-review feed; capture-error findings share the attention schema with journal findings.
+- Proven journal/capture aliases share one finding and preserve review labels; review disagreements and association conflicts remain distinct. Ambiguous duplicate capture IDs cannot be inspected.
 - Journal review identities now include a canonical record-content hash, shared by CLI reports and the desktop backend. Reused integer IDs cannot transfer labels to different records; ambiguous legacy labels remain stored but do not bind to new identities.
 - Replay status detects a singleton lock retained by a surviving child after backend state loss. Unknown ownership/model/timing and unknown completion outcomes remain explicit; duplicate replay prevention is unchanged.
 

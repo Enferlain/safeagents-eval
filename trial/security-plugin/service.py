@@ -215,7 +215,15 @@ class SecurityService:
                     healthy = response.status_code == 200
                     if cid == 'capture' and healthy:
                         data = response.json()
-                        healthy = data.get('capture_enabled') is True and type(data.get('capture_errors')) is int and data['capture_errors'] == 0
+                        components.append({'id': 'recorder', 'label': 'Capture recording',
+                                           'healthy': data.get('capture_enabled') is True
+                                           and type(data.get('capture_errors')) is int
+                                           and data['capture_errors'] == 0,
+                                           'write_errors': data.get('capture_errors') if type(data.get('capture_errors')) is int else None,
+                                           'detail': 'Capture recording state; historical write errors do not imply inference failure.'})
+                        # Endpoint readiness and model identity belong to the judge;
+                        # capture persistence is a separate audit subsystem.
+                        healthy = data.get('status') == 'ok'
                         model = model_catalog().model_identity(data.get('model'))
                         threshold = score(data.get('threshold'))
                     elif cid == 'decision' and healthy:
@@ -305,6 +313,75 @@ class SecurityService:
             return {'state': 'unknown', 'provider': None, 'detail': 'Last-recorded route unavailable.'}
         return unknown
 
+    def _route_activity(self, session_id):
+        unknown = {'attempts': None, 'last_attempt': None}
+        if not self.profile_allowed or identifier(session_id) is None:
+            return unknown
+        try:
+            if not (self.store_path / 'security-routes.jsonl').exists():
+                return unknown
+            rows = [row for row in self._read('security-routes.jsonl')
+                    if row.get('session_id') == session_id and row.get('origin') == 'native_hook']
+            if any(number(row.get('time')) is None for row in rows):
+                return unknown
+            return {'attempts': len(rows), 'last_attempt': max((row['time'] for row in rows), default=None)}
+        except (OSError, ValueError, UnicodeError, TypeError):
+            return unknown
+
+    def _monitoring(self, route):
+        unknown = {'state': 'unverified', 'scope': 'current_managed_run',
+                   'detail': 'Managed proxy run is unverified.', 'run': None, 'policy': None,
+                   'guard': {key: None for key in ('reviewed', 'passed', 'warn', 'flagged', 'blocked')},
+                   'judge': {key: None for key in ('consulted', 'allow', 'block', 'errors',
+                                                  'last_consultation', 'last_success', 'last_failure')},
+                   'records': [], 'journal_path': None}
+        if not self.profile_allowed or route not in ('safeagents-glm', 'safeagents-local'):
+            return unknown
+        try:
+            if not hasattr(self, '_managed_monitor'):
+                import importlib.util
+                path = Path(__file__).with_name('managed_monitor.py')
+                self._safe_path(path)
+                spec = importlib.util.spec_from_file_location('_security_managed_monitor', path)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                self._managed_monitor = module.ManagedMonitor(run_dir=self.hermes_home.parent / '.safeagents/run')
+            return self._managed_monitor.snapshot(route)
+        except (OSError, ValueError, ImportError, TypeError, AttributeError):
+            return unknown
+
+    @staticmethod
+    def _attention(events, subsystems, monitoring):
+        healthy = events is not None and subsystems['review']['healthy'] is True
+        rows = [event for event in (events or []) if event['source'] == 'safeagents'
+                and event['origin'] != 'verification'
+                and (event.get('verdict') in ('suspicious', 'flagged', 'blocked') or event['status'] == 'error')]
+        scope = 'stored_history'
+        journal_path = monitoring.get('journal_path')
+        if monitoring.get('state') in ('verified', 'degraded') and journal_path:
+            scope = 'current_managed_run'
+            path_hash = hashlib.sha256(str(journal_path).encode()).hexdigest()[:12]
+            records = [record for record in monitoring.get('records', []) if record.get('verdict') != 'passed']
+            selected = []
+            for record in records:
+                candidates = [event for event in rows
+                              if event.get('journal_id', '').startswith('journal:' + path_hash + ':')
+                              and event.get('call_id') == record.get('call_id')
+                              and event.get('verdict') == record.get('verdict')
+                              and event.get('judge_outcome') == record.get('judge_outcome')
+                              and number(record.get('time')) is not None
+                              and abs(event['time'] - record['time']) <= 2]
+                if len(candidates) == 1:
+                    selected.append(candidates[0])
+                else:
+                    healthy = False
+            rows = list({event['id']: event for event in selected}.values())
+            healthy = healthy and monitoring['state'] == 'verified'
+        return {'healthy': healthy, 'scope': scope, 'total_events': len(rows), 'has_more': len(rows) > 100,
+                'needs_review': sum(event.get('human_label') is None or event.get('review_conflict') is True
+                                    for event in rows) if healthy else None,
+                'events': sorted(rows, key=lambda row: (row['time'], row['id']), reverse=True)[:100]}
+
     def status(self, session_id=None):
         records, subsystems = self._snapshot()
         events = None
@@ -323,13 +400,17 @@ class SecurityService:
                   'replay_attempts': count('replays', len), 'label_events': count('labels', len),
                   'reviewed_events': None}
         if events is not None and records['labels'] is not None and (self.store_path / 'labels.jsonl').exists():
-            valid = {r['id'] for r in events if r['reviewable']}
-            counts['reviewed_events'] = len({r['id'] for r in records['labels'] if r['id'] in valid})
+            counts['reviewed_events'] = sum(row['reviewable'] and row.get('human_label') is not None
+                                            and not row.get('review_conflict') for row in events)
         health = self._health() if self.profile_allowed else []
         observation = self._route(session_id, health) if self.profile_allowed else {
             'state': 'not_covered', 'provider': None, 'detail': 'Default profile only; this profile is not covered.'}
         healthy = records['calls'] is not None
+        monitoring = self._monitoring(observation.get('provider'))
+        attention = self._attention(events, subsystems, monitoring)
         return {'observed_at': time.time(), 'observation': observation,
+                'monitoring': {key: value for key, value in monitoring.items() if key not in ('records', 'journal_path')},
+                'route_activity': self._route_activity(session_id), 'attention': attention,
                 'enforcement': {'state': 'not_enabled', 'detail': 'Observation only; no live blocking.'},
                 'judge': self._judge_status(health),
                 'components': [{'id': 'store', 'label': 'Private capture store', 'healthy': healthy,
@@ -370,7 +451,14 @@ class SecurityService:
             events.append({'id': cid, 'time': stamp, 'session_id': None, 'turn_id': None, 'tool_call_id': None,
                            'origin': 'verification' if row.get('origin') == 'verification' else 'traffic',
                            'source': 'safeagents', 'status': 'error' if any(item['error'] for item in scores) else 'observed',
-                           'execution': 'not_intercepted', 'tool': None, 'scores': scores,
+                           'execution': 'not_intercepted', 'tool': None,
+                           # Captures are judge inputs, not scanner findings: the journal owns
+                           # verdicts/signals/consultation metadata. Explicit defaults keep the
+                           # attention schema consistent so a single failed capture cannot
+                           # invalidate the whole envelope downstream. No capture_id
+                           # self-reference: _merge_findings would treat it as a journal link.
+                           'verdict': None, 'signals': [], 'judge_consultation': 'unknown',
+                           'scores': scores,
                            'would_flag': live['would_flag'],
                            'human_label': labels.get(cid), 'reviewable': True,
                            'inspectable': isinstance(row.get('payload'), dict),
@@ -392,13 +480,30 @@ class SecurityService:
                     content_hash = hashlib.sha256(json.dumps(row, sort_keys=True, separators=(',', ':'),
                                                             ensure_ascii=False).encode('utf-8')).hexdigest()
                     cid = f'journal:{path_hash}:{index}:{content_hash}'
-                    detail = ('Journal detection failure.' if failure else 'Deterministic bypass flag; not model-scored.' if deterministic
+                    detail = ('Journal detection failure.' if failure else 'Judge not consulted; not model-scored.' if deterministic
                               else 'Proxy journal observation; not proof of tool interception.')
+                    verdict = row.get('verdict') if row.get('verdict') in ('passed', 'suspicious', 'flagged', 'blocked') else None
+                    outcome = next((value for value in ('allow', 'block', 'error')
+                                    if isinstance(judge, str) and judge.startswith(value + ':')), None)
+                    consultation = ('consulted' if outcome else 'not_consulted'
+                                    if 'judge' in row and judge is None else 'unknown')
+                    signals = [{'id': item['id'], 'severity': item['severity']}
+                               for item in row.get('signals', []) if isinstance(item, dict)
+                               and isinstance(item.get('id'), str)
+                               and re.fullmatch(r'[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){1,5}', item['id'])
+                               and item.get('severity') in ('info', 'low', 'medium', 'high', 'critical')]
                     events.append({'id': cid, 'time': stamp, 'session_id': None, 'turn_id': None, 'tool_call_id': None,
+                                   'verdict': verdict, 'signals': signals, 'judge_consultation': consultation,
+                                   'judge_outcome': outcome, 'review_id': cid, 'journal_id': cid,
+                                   'call_id': index, 'capture_id': capture['id'] if capture else None,
+                                   'identity_status': 'matched' if capture else 'partial',
+                                   'review_aliases': [cid] + ([capture['id']] if capture else []),
+                                   'review_conflict': False,
                                    'origin': 'verification' if capture and capture.get('origin') == 'verification' else 'traffic',
                                    'source': 'safeagents', 'status': 'error' if failure else 'observed',
                                    'execution': 'not_intercepted', 'tool': None, 'scores': [],
-                                   'would_flag': True if deterministic else None, 'human_label': labels.get(cid),
+                                   'would_flag': verdict in ('flagged', 'blocked') if verdict is not None else None,
+                                   'human_label': labels.get(cid),
                                    'reviewable': True, 'inspectable': False, 'detail': detail + ' Unassociated: no native session correlation.'})
             native = {}
             for row in self._read('security-events.jsonl'):
@@ -431,7 +536,44 @@ class SecurityService:
         except (OSError, ValueError, UnicodeError, SecurityError, TypeError):
             subsystems['activity'] = {'healthy': False, 'detail': 'Activity records unavailable or invalid.'}
             raise SecurityError(503, {'healthy': False, 'subsystems': subsystems}) from None
-        return events
+        return self._merge_findings(events, records['labels'] or [])
+
+    @staticmethod
+    def _merge_findings(events, label_rows):
+        captures = {event['id']: event for event in events if event['source'] == 'safeagents'
+                    and not event['id'].startswith('journal:')}
+        capture_counts = {}
+        for event in events:
+            if event['id'] in captures:
+                capture_counts[event['id']] = capture_counts.get(event['id'], 0) + 1
+        references = {}
+        for event in events:
+            if event.get('capture_id'):
+                references.setdefault(event['capture_id'], []).append(event)
+        merged, consumed = [], set()
+        for event in events:
+            capture = captures.get(event.get('capture_id'))
+            if capture and len(references[capture['id']]) == 1 and capture_counts[capture['id']] == 1:
+                consumed.add(capture['id'])
+                event.update(scores=capture['scores'], inspectable=capture['inspectable'])
+            elif capture:
+                event.update(identity_status='conflict', inspectable=False, reviewable=False,
+                             review_aliases=[event['id']])
+            if capture_counts.get(event['id'], 0) > 1:
+                event.update(identity_status='conflict', inspectable=False, reviewable=False, scores=[])
+            aliases = event.get('review_aliases', [event['id']])
+            alias_rows = [row for row in label_rows if row['id'] in aliases]
+            latest = {row['id']: row['label'] for row in alias_rows}
+            # One atomic label row can explicitly reconcile all aliases. Historical
+            # labels remain recorded, and subsequent alias edits revive a conflict.
+            if alias_rows and alias_rows[-1].get('review_aliases') == aliases:
+                latest = {alias: alias_rows[-1]['label'] for alias in aliases}
+            event['review_labels'] = latest
+            distinct = set(latest.values())
+            event['review_conflict'] = len(distinct) > 1
+            event['human_label'] = next(iter(distinct)) if len(distinct) == 1 else None
+            merged.append(event)
+        return [event for event in merged if event['id'] not in consumed]
 
     def events(self, session_id=None, all_sessions=False, include_probes=False, limit=50):
         if type(limit) is not int or not 1 <= limit <= 500:
@@ -562,6 +704,8 @@ class SecurityService:
             calls = self._validate('calls', self._read('calls.jsonl'))
         except (OSError, ValueError, UnicodeError, SecurityError, TypeError):
             raise SecurityError(503, 'Capture records unavailable or invalid.') from None
+        if sum(row['id'] == event_id for row in calls) > 1:
+            raise SecurityError(409, 'Capture identity conflicts; inspection refused.')
         for row in calls:
             if row['id'] == event_id:
                 if not isinstance(row.get('payload'), dict):
@@ -608,6 +752,11 @@ class SecurityService:
         if not event['reviewable']:
             raise SecurityError(400, 'This event is not reviewable.')
         try:
+            aliases = event.get('review_aliases', [event['id']])
+            if len(aliases) > 1:
+                self.append('labels.jsonl', {'id': event['id'], 'label': value,
+                                           'review_aliases': aliases, 'time': time.time()})
+                return {'mode': 'log-only', 'id': event['id'], 'label': value}
             return self._load_trusted('observe').label(self, event_id, value)
         except (OSError, ValueError, ImportError):
             raise SecurityError(503, 'Local label write failed.') from None
@@ -615,7 +764,7 @@ class SecurityService:
     def event(self, event_id):
         checked_id(event_id)
         for row in self._event_rows():
-            if row['id'] == event_id:
+            if row['id'] == event_id or (row.get('identity_status') == 'matched' and event_id in row.get('review_aliases', [])):
                 return row
         raise SecurityError(404, 'Event not found.')
 

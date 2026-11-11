@@ -134,7 +134,7 @@ class SecurityTests(unittest.TestCase):
 
     def test_explicit_inspection_and_existing_id_local_label(self):
         import shutil
-        for name in ('observation.py', 'observe.py'):
+        for name in ('observation.py', 'observe.py', 'decision_models.py'):
             shutil.copyfile(ROOT / name, self.repo / 'trial' / name)
         capture = self.capture()
         self.write('calls.jsonl', [capture])
@@ -285,7 +285,7 @@ class SecurityTests(unittest.TestCase):
         def handle(request):
             urls.append(str(request.url))
             if request.url.port == 18873:
-                return httpx.Response(200, json={'capture_enabled': True, 'capture_errors': 0})
+                return httpx.Response(200, json={'status': 'ok', 'capture_enabled': True, 'capture_errors': 0})
             return httpx.Response(302, headers={'location': 'https://evil.example/TOPSECRET'})
         original = httpx.Client
         with patch.dict(os.environ, {'HTTP_PROXY': 'http://evil.example', 'HTTPS_PROXY': 'http://evil.example'}), \
@@ -295,7 +295,8 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(set(urls), {'http://127.0.0.1:18872/health', 'http://127.0.0.1:18873/health'})
         self.assertFalse(factory.call_args.kwargs['trust_env'])
         self.assertFalse(factory.call_args.kwargs['follow_redirects'])
-        self.assertEqual([r['healthy'] for r in result], [False, False, False, True])
+        self.assertEqual({r['id']: r['healthy'] for r in result},
+                         dict(proxy_glm=False, proxy_local=False, decision=False, capture=True, recorder=True))
         self.assertNotIn('TOPSECRET', json.dumps(result))
 
     def test_native_events_merge_and_filter_without_raw_review(self):
@@ -525,7 +526,7 @@ class SecurityTests(unittest.TestCase):
 
     def test_journal_labels_remain_local_and_missing_counts_unknown(self):
         import shutil
-        for name in ('observation.py', 'observe.py'):
+        for name in ('observation.py', 'observe.py', 'decision_models.py'):
             shutil.copyfile(ROOT / name, self.repo / 'trial' / name)
         (self.repo / 'trial/journal.jsonl').write_text(json.dumps(dict(id=1, time=2, judge=None, verdict='flagged')) + '\n')
         client = self.client()

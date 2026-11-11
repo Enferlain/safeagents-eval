@@ -516,7 +516,7 @@ test('status overview uses decorative native icons and state cues without colori
   for (const [label, icon, value, color] of [
     ['Observation status', 'eye', 'Observing', 'var(--ui-accent)'],
     ['Enforcement status', 'shield', 'Not enabled', 'var(--ui-text-secondary)'],
-    ['Live judge', 'pulse', 'D3 Lite · Available', 'var(--ui-green)'],
+    ['Live judge', 'pulse', 'D3 Lite · Ready', 'var(--ui-green)'],
   ]) {
     const current = row(label);
     assert.ok(current, label);
@@ -546,7 +546,7 @@ test('status summary uses quiet unboxed values with explicit observation and enf
     assert.equal(state.props.style.background, undefined);
   }
   assert.equal(nodes.some(n => n.type === 'h2' && n.props.children === 'Security'), false, 'native pane already supplies the title');
-  for (const label of ['Observation', 'Not covered', 'Enforcement', 'Not enabled', 'Traffic', '12', 'Verification', '3', 'Replay', '4', 'Reviews', '5', 'Proxy', 'Unavailable']) assert.ok(text.includes(label), label);
+  for (const label of ['Observation', 'Not covered', 'Enforcement', 'Not enabled', 'Judge captures', '12', 'Verification', '3', 'Replay', '4', 'Reviews', '5', 'Proxy', 'Unavailable']) assert.ok(text.includes(label), label);
   const diagnostics = nodes.find(n => n.type === 'details' && visibleText(n).includes('Diagnostics'));
   assert.ok(diagnostics, 'diagnostics are expandable');
   assert.doesNotMatch(text, /Connection refused diagnostic|Provider routing diagnostic|last-provider/);
@@ -670,7 +670,7 @@ test('review counts prefer unique events and preserve explicit unknown instead o
   h.data.events.unassociated_count = null;
   assert.match(visibleText(h.draw()), /Unknown.*scope notes/);
   h.data.status.counts.traffic_captures = 0;
-  assert.match(visibleText(counts()), /0 Traffic/);
+  assert.match(visibleText(counts()), /0 Judge captures/);
 });
 
 test('store health stays distinct from actual live judge identity and replay choice', () => {
@@ -678,14 +678,14 @@ test('store health stays distinct from actual live judge identity and replay cho
   h.data.status.subsystems = { activity: { healthy: true, detail: 'Activity ready' }, review: { healthy: false, detail: 'Review damaged' }, replay: { healthy: true, detail: 'Replay records ready' } };
   h.data.status.judge = { state: 'available', model: { id: 'qev', label: 'QEV', model_file_sha256: 'a'.repeat(64), native_template_sha256: 'b'.repeat(64) }, threshold: 0.88, detail: 'Verified backend identity' };
   const tree = chooseReplay(h, 'lite'), text = visibleText(tree);
-  for (const label of ['Storage', '2 healthy', 'Live judge', 'QEV · Available']) assert.ok(text.includes(label), label);
+  for (const label of ['Storage', '2 healthy', 'Live judge', 'QEV · Ready']) assert.ok(text.includes(label), label);
   assert.match(text, /Review records\s+Unavailable/);
   assert.ok(h.nodes(tree).some(n => n.props['aria-label'] === 'Review records: Unavailable'));
   assert.doesNotMatch(text, /Activity records: Healthy|Replay records: Healthy/);
-  assert.doesNotMatch(text, /QEV: Healthy|QEV model healthy|D3 Lite · Available/);
+  assert.doesNotMatch(text, /QEV: Healthy|QEV model healthy|D3 Lite · Ready/);
   const live = h.nodes(tree).find(n => n.props['aria-label'] === 'Live judge');
   assert.ok(live, 'live identity is independently labeled');
-  assert.match(visibleText(live), /QEV · Available/);
+  assert.match(visibleText(live), /QEV · Ready/);
   assert.equal(replaySelector(h, tree).props.value, 'lite');
   const diagnostics = h.nodes(tree).find(n => n.type === 'details' && visibleText(n).includes('Diagnostics'));
   diagnostics.props.open = true;
@@ -711,7 +711,7 @@ test('live judge unavailable, mismatch and stale identities never inherit health
   h.data.status.judge = { state: 'mismatch', model };
   assert.match(liveText(), /Unknown model.*identity mismatch/);
   h.data.status.judge = { state: 'available', model };
-  assert.match(liveText(), /D3 Lite · Available/);
+  assert.match(liveText(), /D3 Lite · Ready/);
   h.data.status.observed_at = 0;
   assert.match(liveText(), /Unknown model.*stale/);
   h.data.status.observed_at = new Date().toISOString();
@@ -956,7 +956,7 @@ test('Activity owns its accessible scope controls and truthfully names events wi
   assert.ok(nodes.indexOf(activityHeadings[0]) < nodes.indexOf(selector));
   assert.ok(nodes.indexOf(selector) < nodes.findIndex(n => n.type === 'article'));
   assert.match(visibleText(tree), /2 events without a session · scope notes/);
-  assert.doesNotMatch(visibleText(tree), /unassociated/i);
+  assert.doesNotMatch(visibleText(nodes.find(n => n.type === 'details' && visibleText(n).includes('scope notes'))), /unassociated/i);
   selector.props.onChange({ target: { value: 'all' } });
   tree = h.draw();
   assert.equal(h.nodes(tree).find(n => n.props['aria-label'] === 'Activity scope').props.value, 'all');
@@ -1156,6 +1156,197 @@ test('changing the next Replay model clears only its start error, not an event r
   assert.doesNotMatch(visibleText(replay), /Replay start failed/);
   assert.match(JSON.stringify(h.nodes(tree).find(n => n.type === 'article')), /Review failed: fixture rejection/);
   assert.equal(replayButton(h, tree).props.disabled, false);
+});
+
+function monitoringFixture(overrides = {}) {
+  return { state: 'verified', scope: 'current_managed_run', detail: 'Verified managed run',
+    run: { id: 7, generation: 'run-generation', started_at: 1794355200, listen: '127.0.0.1:8789' },
+    policy: { mode: 'log-only', scanner_enabled: true, judge_enabled: true, journal_enabled: true, block_severity: 'high', judge_failure: 'fail-open' },
+    guard: { reviewed: 14, passed: 10, warn: 1, flagged: 2, blocked: 1 },
+    judge: { consulted: 3, allow: 1, block: 1, errors: 1,
+      last_consultation: { time: 1794355203, outcome: 'error' }, last_success: { time: 1794355202, outcome: 'block' }, last_failure: { time: 1794355203, outcome: 'error' } },
+    ...overrides };
+}
+
+test('monitoring hierarchy renders run Guard and Judge evidence before activity with audit counts near visible Replay', () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  h.data.status.monitoring = monitoringFixture();
+  h.data.status.route_activity = { attempts: 21, last_attempt: 1794355201 };
+  h.data.status.judge = { state: 'available', model: replayModels[0] };
+  h.data.status.counts = { traffic_captures: 8, verification_captures: 2, replay_attempts: 4, reviewed_events: 3 };
+  const tree = h.draw(), nodes = h.nodes(tree), text = visibleText(tree);
+  const section = label => nodes.find(n => n.props['aria-label'] === label);
+  assert.match(visibleText(section('Live judge')), /D3 Lite · Ready/);
+  assert.match(visibleText(section('Guard monitoring')), /Current managed run/);
+  assert.match(visibleText(section('Guard monitoring')), /14 Reviewed\s+10 PASS\s+1 WARN\s+2 FLAG\s+1 BLOCK/);
+  assert.match(visibleText(section('Guard monitoring')), /Log-only.*Scanner: Enabled.*Judge: Enabled.*Journal: Enabled/);
+  assert.match(visibleText(section('Judge consultations')), /3 Consultations\s+1 Allow\s+1 Block\s+1 Errors/);
+  for (const [label, outcome, stamp] of [['Last consultation', 'error', 1794355203], ['Last success', 'block', 1794355202], ['Last failure', 'error', 1794355203]]) {
+    assert.ok(visibleText(section('Judge consultations')).includes(`${label}: ${h.c.displayTime(stamp)} · ${outcome}`));
+  }
+  assert.match(text, /21 provider pre-request attempts/);
+  assert.match(text, /not proxy receipts/);
+  assert.ok(nodes.indexOf(section('Guard monitoring')) < nodes.findIndex(n => n.type === 'h3' && n.props.children === 'Activity'));
+  const audit = section('Evaluation & audit');
+  assert.match(visibleText(audit), /Stored history/);
+  assert.match(visibleText(audit), /8 Judge captures/);
+  assert.ok(nodes.indexOf(audit) > nodes.findIndex(n => n.type === 'article'));
+  assert.ok(nodes.indexOf(audit) < nodes.indexOf(section('Replay controls')));
+  assert.match(text, /Replay pending captures/);
+});
+
+test('monitoring distinguishes verified zero consultations from unverified, degraded, missing and failed evidence', () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  const sections = () => {
+    const tree = h.draw(), nodes = h.nodes(tree);
+    return { guard: visibleText(nodes.find(n => n.props['aria-label'] === 'Guard monitoring')), judge: visibleText(nodes.find(n => n.props['aria-label'] === 'Judge consultations')) };
+  };
+  const zeroJudge = { consulted: 0, allow: 0, block: 0, errors: 0, last_consultation: null, last_success: null, last_failure: null };
+  h.data.status.monitoring = monitoringFixture({ judge: zeroJudge });
+  assert.match(sections().judge, /0 Consultations\s+0 Allow\s+0 Block\s+0 Errors/);
+  assert.match(sections().judge, /Last consultation: None in current managed run/);
+  h.data.status.monitoring = monitoringFixture({ state: 'unverified', guard: { reviewed: 0, passed: 0, warn: 0, flagged: 0, blocked: 0 }, judge: zeroJudge });
+  assert.match(sections().judge, /Unknown Consultations/);
+  assert.doesNotMatch(sections().judge, /None in current managed run|0 Consultations/);
+  assert.match(sections().guard, /Unknown Reviewed/);
+  h.data.status.monitoring = monitoringFixture({ state: 'degraded', guard: { reviewed: 4, passed: null, warn: null, flagged: 2, blocked: null }, judge: { ...zeroJudge, consulted: null, allow: null, block: null, errors: 2 } });
+  assert.match(sections().guard, /Degraded.*4 Reviewed\s+Unknown PASS/);
+  assert.match(sections().judge, /Unknown Consultations\s+Unknown Allow\s+Unknown Block\s+2 Errors/);
+  h.data.status.monitoring.policy = { mode: 'log-only', scanner_enabled: false, judge_enabled: false, journal_enabled: false, block_severity: 'critical', judge_failure: 'fail-closed' };
+  assert.match(sections().guard, /Scanner: Disabled.*Judge: Disabled.*Journal: Disabled.*critical.*fail-closed/);
+  for (const failure of ['missing', 'wrong-scope', 'stale', 'error']) {
+    h.data.status.monitoring = failure === 'missing' ? undefined : monitoringFixture(failure === 'wrong-scope' ? { scope: 'stored_history' } : {});
+    h.data.status.observed_at = failure === 'stale' ? 0 : new Date().toISOString();
+    h.errors.status = failure === 'error' ? new Error('offline') : null;
+    assert.match(sections().guard, /Unknown Reviewed/, failure);
+    assert.match(sections().judge, /Unknown Consultations/, failure);
+    assert.doesNotMatch(sections().judge, /Last consultation:.*error/, failure);
+  }
+});
+
+function attentionEvent(overrides = {}) {
+  return { id: 'journal:canonical', source: 'safeagents', session_id: null, tool: 'terminal', time: 1794355205,
+    verdict: 'flagged', signals: [{ id: 'side_channel.model_call', severity: 'high' }], judge_consultation: 'not_consulted', judge_outcome: null,
+    identity_status: 'matched', review_conflict: false, review_id: 'journal:canonical', journal_id: 'journal:canonical', call_id: 'call-7',
+    capture_id: null, review_aliases: [], human_label: null, reviewable: true, inspectable: false, scores: [], ...overrides };
+}
+
+test('Needs review leads native Activity with unassociated verdict, signals and consultation evidence without score placeholders', async () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  h.data.status.monitoring = monitoringFixture();
+  h.data.status.attention = { healthy: true, scope: 'current_managed_run', needs_review: 1, events: [attentionEvent()] };
+  const tree = h.draw(), nodes = h.nodes(tree);
+  const attention = nodes.find(n => n.props['aria-label'] === 'Needs review');
+  assert.ok(attention);
+  const text = visibleText(attention);
+  assert.match(text, /1 needs review/);
+  assert.match(text, /Current managed run.*Unassociated with Hermes sessions/);
+  assert.match(text, /not current-session findings/);
+  assert.match(text, /FLAG.*side_channel.model_call.*high.*Judge: Not consulted/);
+  assert.ok(text.includes(h.c.displayTime(1794355205)));
+  assert.doesNotMatch(text, /No model scores|score provenance|Execution unknown/);
+  assert.ok(nodes.indexOf(attention) < nodes.findIndex(n => n.type === 'h3' && n.props.children === 'Activity'));
+  const row = h.nodes(attention).find(n => n.type === 'article');
+  const details = h.nodes(row).find(n => n.type === 'details'); details.props.open = true;
+  assert.match(visibleText(details), /Post-hoc review: Not reviewed/);
+  assert.equal(h.nodes(row).some(n => n.props.children === 'Inspect raw capture'), false, 'journal-only finding has no raw capture');
+  await h.nodes(row).find(n => n.props.children === 'Expected').props.onClick();
+  assert.equal(h.calls.at(-1).path, '/label');
+  assert.equal(h.calls.at(-1).options.body.id, 'journal:canonical');
+  assert.equal(h.calls.at(-1).options.body.value, 'authorized');
+});
+
+test('attention trusts only backend canonical joins, removes proven duplicates and routes raw inspection by capture ID', async () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  const joined = attentionEvent({ id: 'journal:joined', journal_id: 'journal:joined', review_id: 'journal:joined', capture_id: 'capture:joined', review_aliases: ['capture:joined'], inspectable: true, judge_consultation: 'consulted', judge_outcome: 'block', scores: [scoreFixture('live', 'qev', 0.95, { would_flag: true })] });
+  const unrelated = attentionEvent({ id: 'journal:separate', journal_id: 'journal:separate', review_id: 'journal:separate', tool_call_id: 'unproven-common-call', call_id: joined.call_id, identity_status: 'partial' });
+  h.data.status.attention = { healthy: true, scope: 'stored_history', needs_review: 2, events: [joined, unrelated] };
+  h.data.events.events = [
+    { id: 'native', source: 'hermes', session_id: 's', tool: 'native-tool', reviewable: false },
+    { id: 'capture:joined', source: 'safeagents', session_id: null, tool: 'duplicate-tool', reviewable: true, inspectable: true },
+    { id: 'capture:unproven', source: 'safeagents', session_id: null, tool: 'unproven-tool', call_id: joined.call_id, reviewable: true, inspectable: true },
+  ];
+  h.nodes(h.draw()).find(n => n.props['aria-label'] === 'Activity scope').props.onChange({ target: { value: 'all' } });
+  const tree = h.draw(), nodes = h.nodes(tree), attention = nodes.find(n => n.props['aria-label'] === 'Needs review');
+  assert.match(visibleText(attention), /Stored history/);
+  assert.equal(h.nodes(attention).filter(n => n.type === 'article').length, 2, 'shared call fields do not prove a detector join');
+  assert.equal(nodes.filter(n => n.type === 'article').length, 4, 'joined capture duplicate removed but unproven capture and native event retained');
+  assert.doesNotMatch(visibleText(tree), /duplicate-tool/);
+  assert.match(visibleText(tree), /unproven-tool/);
+  assert.match(visibleText(attention), /Judge: Consulted · block/);
+  assert.match(visibleText(attention), /Live · QEV 0.95 · Would flag/);
+  const row = h.nodes(attention).find(n => n.props['data-event-id'] === 'journal:joined');
+  await h.nodes(row).find(n => n.props.children === 'Inspect raw capture').props.onClick();
+  assert.equal(h.calls.at(-1).options.body.id, 'capture:joined');
+  assert.equal(h.calls.at(-1).options.body.include_content, true);
+  assert.match(JSON.stringify(h.draw()), /LOCAL RAW SECRET/);
+  assert.equal(h.nodes(h.draw()).filter(n => n.type === 'pre').length, 1);
+  assert.equal(h.nodes(h.draw()).find(n => n.props['aria-label'] === 'Activity scope').props.value, 'all');
+});
+
+test('attention keeps findings and needs-review totals separate and exposes identity and review conflicts without approvals', () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  h.data.status.attention = { healthy: true, scope: 'stored_history', needs_review: 1, events: [
+    attentionEvent({ id: 'conflict', review_conflict: true, identity_status: 'conflict', human_label: 'authorized' }),
+    attentionEvent({ id: 'labeled', human_label: 'authorized', verdict: 'suspicious', identity_status: 'partial', judge_consultation: 'unknown' }),
+  ] };
+  const attention = h.nodes(h.draw()).find(n => n.props['aria-label'] === 'Needs review');
+  const text = visibleText(attention);
+  assert.match(text, /1 needs review.*2 recent findings/);
+  assert.match(text, /Review conflict.*Identity conflict/);
+  assert.match(text, /Identity partial/);
+  assert.match(text, /WARN.*Judge: Consultation unknown/);
+  const conflict = h.nodes(attention).find(n => n.props['data-event-id'] === 'conflict');
+  const labeled = h.nodes(attention).find(n => n.props['data-event-id'] === 'labeled');
+  assert.equal(h.nodes(conflict).some(n => n.props['aria-pressed'] === true), false, 'conflicting historical labels do not present one selected value');
+  const selected = h.nodes(labeled).find(n => n.props['aria-pressed'] === true);
+  assert.equal(selected.props.children, 'Expected');
+  assert.match(selected.props.style.border, /var\(--ui-accent\)/);
+  assert.doesNotMatch(text, /Approved|Allow tool|Block tool|not executed|not stopped/);
+});
+
+test('attention capture capabilities reject retained inspection when the canonical capture identity changes', async () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  h.data.status.attention = { healthy: true, scope: 'current_managed_run', needs_review: 1, events: [attentionEvent({ capture_id: 'capture:old', inspectable: true })] };
+  const inspect = h.nodes(h.draw()).find(n => n.props['data-event-id'] === 'journal:canonical');
+  const retained = h.nodes(inspect).find(n => n.props.children === 'Inspect raw capture').props.onClick;
+  h.data.status.attention.events[0].capture_id = 'capture:new'; h.draw();
+  await retained();
+  assert.equal(h.calls.length, 0, 'retained callback must not dispatch obsolete capture ID');
+  const current = h.nodes(h.draw()).find(n => n.props['data-event-id'] === 'journal:canonical');
+  await h.nodes(current).find(n => n.props.children === 'Inspect raw capture').props.onClick();
+  assert.equal(h.calls.at(-1).options.body.id, 'capture:new');
+  h.data.status.attention.events[0].capture_id = null; h.draw();
+  const missing = h.nodes(h.draw()).find(n => n.props['data-event-id'] === 'journal:canonical');
+  const unavailable = h.nodes(missing).find(n => n.props.children === 'Inspect raw capture');
+  assert.equal(unavailable?.props.disabled ?? true, true, 'an attention event needs a concrete capture ID even if capability is inconsistent');
+  await retained();
+  assert.equal(h.calls.length, 1);
+});
+
+test('invalid attention envelopes fail closed locally without erasing independent Guard and Ready judge evidence', async () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  h.data.status.monitoring = monitoringFixture();
+  h.data.status.judge = { state: 'available', model: replayModels[0], capture_enabled: false, capture_errors: 12 };
+  h.data.status.attention = { healthy: true, scope: 'current_managed_run', needs_review: 1, events: [attentionEvent()] };
+  const retained = h.nodes(h.draw()).find(n => n.props['data-event-id'] === 'journal:canonical');
+  const review = h.nodes(retained).find(n => n.props.children === 'Expected').props.onClick;
+  for (const invalid of [
+    { healthy: true, scope: 'unsupported', needs_review: 0, events: [attentionEvent()] },
+    { healthy: true, scope: 'stored_history', needs_review: 0, events: 'not-an-array' },
+    { healthy: true, scope: 'stored_history', needs_review: 0, events: [null] },
+    { healthy: true, scope: 'stored_history', needs_review: 0, events: [attentionEvent({ signals: [null] })] },
+  ]) {
+    h.data.status.attention = invalid;
+    const tree = h.draw(), nodes = h.nodes(tree);
+    const attention = nodes.find(n => n.props['aria-label'] === 'Needs review');
+    assert.match(visibleText(attention), /Unknown needs review/);
+    assert.equal(h.nodes(attention).some(n => n.type === 'article'), false);
+    assert.match(visibleText(nodes.find(n => n.props['aria-label'] === 'Guard monitoring')), /14 Reviewed/);
+    assert.match(visibleText(nodes.find(n => n.props['aria-label'] === 'Live judge')), /D3 Lite · Ready/);
+    await review();
+    assert.equal(h.calls.length, 0);
+  }
 });
 
 const now = Date.parse('2026-11-10T16:00:00Z');

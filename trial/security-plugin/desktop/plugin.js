@@ -59,7 +59,7 @@ function liveJudgeLabel(judge, error, stale) {
   if (judge?.state === 'unavailable') return 'Unavailable';
   if (judge?.state === 'mismatch') return 'Unknown model · identity mismatch';
   const label = modelLabel(judge?.model);
-  return judge?.state === 'available' && label !== 'Unknown model' ? `${label} · Available` : 'Unknown model';
+  return judge?.state === 'available' && label !== 'Unknown model' ? `${label} · Ready` : 'Unknown model';
 }
 function healthComponents(status) {
   const labels = { proxy_glm: 'GLM observation proxy', proxy_local: 'Local observation proxy', decision: 'Local decision model', capture: 'Observation adapter', store: 'Private capture store', activity: 'Activity records', review: 'Review records', replay: 'Replay records' };
@@ -86,6 +86,13 @@ function healthGroups(components, observation, error, stale) {
     { label: 'Components', components: components.filter(component => !storage(component) && !routeIds.includes(component.id)) },
     { label: 'Storage', components: components.filter(storage) },
   ].filter(group => group.components.length);
+}
+function attentionView(value) {
+  return value && typeof value.healthy === 'boolean' && ['current_managed_run', 'stored_history'].includes(value.scope)
+    && (value.needs_review === null || Number.isInteger(value.needs_review) && value.needs_review >= 0)
+    && Array.isArray(value.events) && value.events.every(event => event && typeof event.id === 'string'
+      && Array.isArray(event.signals) && event.signals.every(signal => signal && typeof signal.id === 'string' && typeof signal.severity === 'string'))
+    ? value : null;
 }
 function resourceValid(resource, value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -119,7 +126,7 @@ const flow = { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, 
 const compactButton = { maxWidth: '100%', height: 'auto', minHeight: 24, padding: '3px 6px', fontSize: 11, whiteSpace: 'normal', textAlign: 'left' };
 
 function stateColor(value) {
-  if (value === 'Healthy' || value.endsWith(' · Available')) return 'var(--ui-green)';
+  if (value === 'Healthy' || value.endsWith(' · Ready')) return 'var(--ui-green)';
   if (value === 'Observing') return 'var(--ui-accent)';
   if (/unavailable|degraded|stale|failed|mismatch/i.test(value)) return 'var(--ui-yellow)';
   return 'var(--ui-text-secondary)';
@@ -132,6 +139,39 @@ function statusLine(label, value, icon, ariaLabel = `${label} status`) {
     jsxs('span', { style: { ...flow, ...muted, flexWrap: 'nowrap', gap: 7, fontSize: 11 }, children: [jsx(Codicon, { name: icon, size: 13, 'aria-hidden': true, style: { flexShrink: 0, opacity: 0.75 } }), jsx('span', { children: label })] }),
     jsxs('span', { style: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 5, minWidth: 0 }, children: [stateCue(value), jsx('span', { style: { ...stateValue, color: stateColor(value), textAlign: 'right' }, children: value })] }),
   ] }, label);
+}
+
+function countGrid(entries, ariaLabel) {
+  return jsx('div', { 'aria-label': ariaLabel, style: { display: 'grid', gridTemplateColumns: `repeat(${entries.length}, minmax(0, 1fr))`, gap: 4, padding: '8px 0' }, children: entries.map(([label, value]) => jsxs('div', { style: { minWidth: 0 }, children: [
+    jsx('div', { style: { fontSize: 16, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }, children: Number.isInteger(value) && value >= 0 ? value : 'Unknown' }),
+    jsx('div', { style: { ...muted, fontSize: 10, overflowWrap: 'anywhere' }, children: label }),
+  ] }, label)) });
+}
+function monitoringSections(status, unavailable) {
+  const monitoring = !unavailable ? status?.monitoring : null;
+  const current = monitoring?.scope === 'current_managed_run' && ['verified', 'degraded'].includes(monitoring?.state);
+  const guard = current ? monitoring?.guard : null;
+  const judge = current ? monitoring?.judge : null;
+  const policy = current ? monitoring?.policy : null;
+  const route = !unavailable ? status?.route_activity : null;
+  const enabled = value => value === true ? 'Enabled' : value === false ? 'Disabled' : 'Unknown';
+  return [
+    jsxs('div', { 'aria-label': 'Guard monitoring', style: block, children: [
+      jsx('h3', { style: heading, children: 'Guard' }),
+      jsx('div', { style: { ...muted, fontSize: 11 }, children: `Current managed run · ${monitoring?.state === 'verified' && current ? 'Verified' : monitoring?.state === 'degraded' && current ? 'Degraded' : 'Unknown'}` }),
+      countGrid([['Reviewed', guard?.reviewed], ['PASS', guard?.passed], ['WARN', guard?.warn], ['FLAG', guard?.flagged], ['BLOCK', guard?.blocked]]),
+      jsx('div', { style: { ...muted, fontSize: 11 }, children: `${policy?.mode === 'log-only' ? 'Log-only' : policy?.mode === 'enforcing' ? 'Enforcing' : 'Policy unknown'} · Scanner: ${enabled(policy?.scanner_enabled)} · Judge: ${enabled(policy?.judge_enabled)} · Journal: ${enabled(policy?.journal_enabled)}` }),
+      jsx('div', { style: { ...muted, fontSize: 11 }, children: `Block severity: ${policy?.block_severity || 'Unknown'} · Judge failure: ${policy?.judge_failure || 'Unknown'}` }),
+      jsx('div', { style: { ...muted, fontSize: 11 }, children: monitoring?.detail || 'Managed-run monitoring unavailable; update/restart the Security backend if needed.' }),
+      jsx('div', { style: { ...muted, fontSize: 11, marginTop: 4 }, children: `${Number.isInteger(route?.attempts) && route.attempts >= 0 ? route.attempts : 'Unknown'} provider pre-request attempts · selected session · not proxy receipts · Last attempt: ${displayTime(route?.last_attempt)}` }),
+    ] }),
+    jsxs('div', { 'aria-label': 'Judge consultations', style: block, children: [
+      jsx('h3', { style: heading, children: 'Judge' }),
+      jsx('div', { style: { ...muted, fontSize: 11 }, children: 'Current managed run · consultations, not runtime readiness' }),
+      countGrid([['Consultations', judge?.consulted], ['Allow', judge?.allow], ['Block', judge?.block], ['Errors', judge?.errors]]),
+      ...[['Last consultation', 'last_consultation'], ['Last success', 'last_success'], ['Last failure', 'last_failure']].map(([label, key]) => jsx('div', { style: { ...muted, fontSize: 11 }, children: `${label}: ${judge?.[key] ? `${displayTime(judge[key].time)} · ${judge[key].outcome}` : monitoring?.state === 'verified' && judge?.consulted === 0 ? 'None in current managed run' : 'Unknown'}` }, key)),
+    ] }),
+  ];
 }
 
 function definitions(entries) {
@@ -260,9 +300,13 @@ function SecurityPanel({ ctx, scope, status }) {
     if (current.events.error || !current.events.data || subsystems?.activity?.healthy === false
       || current.events.data.subsystems?.activity?.healthy === false
       || (current.events.dataUpdatedAt && Date.now() - current.events.dataUpdatedAt > 60000)) return false;
-    const fresh = current.events.data.events?.find(e => e.id === event?.id);
+    const fresh = event?._attention
+      ? attentionView(current.status.data.attention)?.events?.find(e => e.id === event.id)
+      : current.events.data.events?.find(e => e.id === event?.id);
     return !!fresh && (kind === 'inspect' ? fresh.inspectable === true
-      : fresh.reviewable !== false && subsystems?.review?.healthy !== false);
+        && (!event?._attention || typeof fresh.capture_id === 'string' && !!fresh.capture_id && fresh.capture_id === event.capture_id)
+      : fresh.reviewable !== false && subsystems?.review?.healthy !== false
+        && (!event?._attention || current.status.data.attention?.healthy === true));
   }
   const activityFailed = !!events.error || events.data?.subsystems?.activity?.healthy === false || status.data?.subsystems?.activity?.healthy === false;
   const statusUnavailable = !!status.error || !status.data || coverageView(status.data, null).stale;
@@ -286,7 +330,7 @@ function SecurityPanel({ ctx, scope, status }) {
     try {
       const result = await ctx.rest('/label', { method: 'POST', body: { id: event.id, value } });
       if (result?.success === false) throw new Error('Review was not saved');
-      if (actionCurrent(epoch)) await events.refetch();
+      if (actionCurrent(epoch)) { await events.refetch(); if (event._attention && actionCurrent(epoch)) await latest.current.status.refetch(); }
     } catch (error) { if (actionCurrent(epoch)) setEventError(event.id, 'review', `Review failed: ${error.message || error}`); }
     finally { if (actionCurrent(epoch)) setBusy(null); }
   }
@@ -311,18 +355,61 @@ function SecurityPanel({ ctx, scope, status }) {
   const jobModel = startingReplay?.label || replay.data?.models.find(model => model.id === replay.data.model)?.label || 'Unknown model';
   const hasReplayJob = !!startingReplay || replay.data?.model != null || replay.data?.state === 'running';
   const judgeLabel = liveJudgeLabel(status.data?.judge, status.error, view.stale);
-  const rows = activityRows(events.data?.events, session, allSessions, includeProbes);
+  const attention = statusUnavailable ? null : attentionView(status.data?.attention);
+  const attentionEvents = Array.isArray(attention?.events) ? attention.events.filter(event => event && typeof event.id === 'string' && (includeProbes || !/verification|probe/i.test(event.origin || ''))) : [];
+  // Attention is an unassociated detector feed, never a native session join.
+  const attentionRows = attentionEvents.map(event => ({ key: `attention:${event.id}`, attention: true,
+    events: [{ ...event, _attention: true }], sources: [event.source || 'safeagents'], scores: eventScores(event), reviewable: event.reviewable === true ? [event] : [] }));
+  const attentionIds = new Set(attentionEvents.flatMap(event => [event.id, event.capture_id, event.journal_id, event.review_id, ...(Array.isArray(event.review_aliases) ? event.review_aliases : [])]).filter(id => typeof id === 'string'));
+  const rows = activityRows(events.data?.events?.filter(event => event.source === 'hermes' || !attentionIds.has(event.id)), session, allSessions, includeProbes);
   const components = healthComponents(status.data);
   async function inspect(event) {
     if (busyAction.current !== null || !ready('inspect', event)) return;
     const request = ++ticket.current;
     setRaw(null); setBusy(event.id); setEventError(event.id, 'inspect', '');
     try {
-      const capture = await ctx.rest('/inspect', { method: 'POST', body: { id: event.id, include_content: true } });
+      const capture = await ctx.rest('/inspect', { method: 'POST', body: { id: event.capture_id || event.id, include_content: true } });
       if (ready('inspect', event) && ticket.current === request) setRaw({ id: event.id, ...rawView(capture) });
     } catch (error) { if (alive.current && sameScope(scope) && ticket.current === request) setEventError(event.id, 'inspect', `Inspect failed: ${error.message || error}`); }
     finally { if (alive.current && sameScope(scope) && ticket.current === request) setBusy(null); }
   }
+  const renderRow = row => jsx('article', { style: block, children: [
+      jsxs('div', { style: { ...flow, justifyContent: 'space-between' }, children: [
+        jsx('strong', { style: { minWidth: 0, overflowWrap: 'anywhere', fontWeight: 600 }, children: row.events[0].tool || 'Captured call' }),
+        jsx('span', { style: { ...muted, fontSize: 10 }, children: displayTime(row.events[0].time) }),
+      ] }),
+      jsx('div', { style: { ...muted, fontSize: 11, marginTop: 3 }, children: row.sources.map(sourceLabel).join(' · ') || 'Source unknown' }),
+      row.attention ? jsxs('div', { style: { fontSize: 11, marginTop: 3 }, children: [
+        jsx('strong', { children: ({ passed: 'PASS', suspicious: 'WARN', flagged: 'FLAG', blocked: 'BLOCK' })[row.events[0].verdict] || 'Verdict unknown' }),
+        ...(Array.isArray(row.events[0].signals) ? row.events[0].signals : []).map((signal, i) => jsx('div', { children: `${signal.id || 'Unknown signal'} · ${signal.severity || 'Unknown severity'}` }, i)),
+        jsx('div', { children: `Judge: ${row.events[0].judge_consultation === 'not_consulted' ? 'Not consulted' : row.events[0].judge_consultation === 'consulted' ? `Consulted · ${row.events[0].judge_outcome || 'Outcome unknown'}` : 'Consultation unknown'}` }),
+        row.events[0].review_conflict === true ? jsx('div', { style: { color: 'var(--ui-yellow)' }, children: 'Review conflict · historical annotations disagree' }) : null,
+        ['partial', 'conflict'].includes(row.events[0].identity_status) ? jsx('div', { style: muted, children: `Identity ${row.events[0].identity_status} · detector records only, not session correlation` }) : null,
+      ] }) : null,
+      row.scores.length || (!row.attention || row.events[0].judge_consultation !== 'not_consulted') && scoreAbsence(row) ? jsx('div', { style: { fontVariantNumeric: 'tabular-nums', margin: '4px 0' }, children: row.scores.length ? row.scores.map((score, index) => jsx('div', { children: scoreSummary(score) }, index)) : scoreAbsence(row) }) : null,
+      !row.attention ? jsx('div', { style: { fontSize: 11 }, children: row.execution === 'Tool returned' ? 'Tool returned · effects unverified' : row.execution }) : null,
+      jsxs('details', { children: [
+        jsx('summary', { style: summary, children: row.reviewable.length ? 'Details & review' : 'Details' }),
+        definitions([['Session', row.events[0].session_id || 'Without a session'], ['Turn', row.events[0].turn_id || 'Unknown'], ['Tool call', row.events[0].tool_call_id || 'Unknown'], ['API request', row.events[0].api_request_id || 'Unknown'], ['Recorded status', [...new Set(row.events.map(e => e.status).filter(Boolean))].join(', ') || 'unknown']]),
+        ...row.events.map((event, index) => jsxs('div', { 'data-event-id': event.id, style: { paddingTop: 6 }, children: [
+          definitions([['Event ID', event.id]]),
+          jsx('div', { style: muted, children: event.detail || '' }),
+          ...eventScores(event).map((score, scoreIndex) => jsxs('div', { style: { ...muted, fontSize: 11, paddingTop: 4 }, children: [
+            jsx('div', { children: scoreSummary(score) }),
+            jsx('div', { children: `Threshold: ${Number.isFinite(score.threshold) ? score.threshold : 'Unknown'} · provisional · Scored: ${displayTime(score.time)}` }),
+          ] }, scoreIndex)),
+          event.reviewable !== false ? jsxs('div', { style: flow, children: [
+            jsx('span', { style: { ...muted, width: '100%', fontSize: 11 }, children: `Post-hoc review: ${event.review_conflict === true ? 'Conflict' : event.human_label === 'authorized' ? 'Expected' : event.human_label || 'Not reviewed'}` }),
+            jsx('span', { style: { ...muted, width: '100%', fontSize: 11 }, children: 'Annotation only · no effect on execution.' }),
+            ...[['authorized', 'Expected'], ['unwanted', 'Unwanted'], ['insufficient-context', 'Insufficient context']].map(([value, text]) => jsx(Button, { variant: 'ghost', size: 'sm', style: { ...compactButton, border: event.review_conflict !== true && event.human_label === value ? '1px solid var(--ui-accent)' : '1px solid transparent', background: event.review_conflict !== true && event.human_label === value ? 'color-mix(in srgb, var(--ui-accent) 12%, transparent)' : 'transparent', fontWeight: event.review_conflict !== true && event.human_label === value ? 600 : 400 }, disabled: busy !== null || !ready('review', event), 'aria-pressed': event.review_conflict !== true && event.human_label === value, onClick: () => label(event, value), children: text }, value)),
+          ] }) : null,
+          eventErrors[event.id]?.review ? jsx('div', { role: 'alert', children: eventErrors[event.id].review }) : null,
+          event.inspectable === true ? jsx(Button, { variant: 'ghost', size: 'sm', style: compactButton, disabled: busy !== null || !ready('inspect', event), onClick: () => inspect(event), children: 'Inspect raw capture' }) : null,
+          eventErrors[event.id]?.inspect ? jsx('div', { role: 'alert', children: eventErrors[event.id].inspect }) : null,
+          raw?.id === event.id && ready('inspect', event) ? jsxs('div', { 'aria-label': 'Local-only raw capture', children: [jsx('div', { style: { ...muted, fontSize: 11, marginTop: 6 }, children: 'Raw capture · local-only display' }), jsx(Button, { variant: 'ghost', size: 'sm', style: compactButton, onClick: () => { ticket.current++; setRaw(null); }, children: 'Hide raw capture' }), jsx('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 240, overflowY: 'auto', padding: 8, border: '1px solid var(--ui-stroke-secondary)', borderRadius: 3, background: 'color-mix(in srgb, var(--ui-text-primary) 3%, transparent)', fontFamily: 'monospace', fontSize: 11, userSelect: 'text' }, children: raw.content }), raw.truncated ? jsx('div', { role: 'status', children: 'Raw capture truncated · response / display limit reached.' }) : null] }) : null,
+        ] }, `${event.id}:${index}`)),
+      ] }),
+    ] }, row.key);
   return jsxs('section', { 'aria-label': 'Security', style: { minWidth: 0, lineHeight: 1.45, overflowWrap: 'anywhere' }, children: [
     jsxs('div', { style: { ...flow, justifyContent: 'space-between', marginBottom: 6 }, children: [
       jsx('span', { style: muted, children: 'Session' }),
@@ -363,7 +450,15 @@ function SecurityPanel({ ctx, scope, status }) {
       ...components.map(component => jsx('div', { style: muted, children: `${component.label}: ${componentState(component, status.error, view.stale)}${status.error || view.stale ? ` · Last recorded: ${componentState(component, null, false)}` : ''} · ${component.detail || 'No diagnostics recorded'}` }, component.id)),
       jsx('p', { style: muted, children: 'This panel adds no permission system.' }),
     ] }),
-    jsx('div', { 'aria-label': 'Capture counts', style: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 4, padding: '8px 0' }, children: [['Traffic', 'traffic_captures'], ['Verification', 'verification_captures'], ['Replay', 'replay_attempts'], ['Reviews', 'label_events']].map(([label, key]) => jsxs('div', { style: { minWidth: 0 }, children: [jsx('div', { style: { fontSize: 16, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }, children: (key === 'label_events' && Object.hasOwn(status.data?.counts || {}, 'reviewed_events') ? status.data.counts.reviewed_events : status.data?.counts?.[key]) ?? 'Unknown' }), jsx('div', { style: { ...muted, fontSize: 10, overflowWrap: 'anywhere' }, children: label })] }, key)) }),
+    ...monitoringSections(status.data, statusUnavailable),
+    jsxs('div', { 'aria-label': 'Needs review', style: block, children: [
+      jsx('h3', { style: heading, children: 'Needs review' }),
+      jsx('div', { style: { ...stateValue, marginBottom: 4 }, children: `${attention?.healthy === true && status.data?.subsystems?.review?.healthy !== false && Number.isInteger(attention.needs_review) && attention.needs_review >= 0 ? attention.needs_review : 'Unknown'} needs review` }),
+      jsx('div', { style: { ...muted, fontSize: 11 }, children: `${attention?.scope === 'current_managed_run' ? 'Current managed run' : attention?.scope === 'stored_history' ? 'Stored history' : 'Scope unknown'} · Unassociated with Hermes sessions · not current-session findings` }),
+      !attention ? jsx('div', { style: muted, children: 'Attention unavailable · no known review total.' }) : !attentionRows.length ? jsx('div', { style: muted, children: attention.healthy === true ? 'No recent attention events in this scope.' : 'Attention records unavailable.' }) : null,
+      attention ? jsx('div', { style: { ...muted, fontSize: 11 }, children: `${attentionRows.length} recent findings shown · post-hoc annotations only` }) : null,
+      ...attentionRows.map(renderRow),
+    ] }),
     jsxs('div', { style: block, children: [
       jsx('h3', { style: heading, children: 'Activity' }),
       jsx('label', { style: { display: 'block' }, children: jsx('select', { disabled: !allowedScope(scope), 'aria-label': 'Activity scope', style: { width: '100%', maxWidth: '100%', minWidth: 0, padding: '4px 6px', borderRadius: 3, font: 'inherit', color: 'var(--ui-text-primary)', background: 'var(--ui-bg-input)', border: '1px solid var(--ui-stroke-secondary)' }, value: allSessions ? 'all' : 'current', onChange: e => { resetActivity(); setAllSessions(e.target.value === 'all'); }, children: [jsx('option', { value: 'current', children: 'Current session' }), jsx('option', { value: 'all', children: 'All sessions' })] }) }),
@@ -372,36 +467,12 @@ function SecurityPanel({ ctx, scope, status }) {
     ] }),
 
     events.error ? jsx('div', { role: 'alert', children: `Activity request failed: ${events.error.message || events.error}` }) : !events.data ? jsx('p', { children: 'Loading activity…' }) : !rows.length ? jsx('p', { children: !allSessions && !session ? 'Select a session or choose All sessions.' : 'No activity in this scope.' }) : null,
-    ...rows.map(row => jsx('article', { style: block, children: [
-      jsxs('div', { style: { ...flow, justifyContent: 'space-between' }, children: [
-        jsx('strong', { style: { minWidth: 0, overflowWrap: 'anywhere', fontWeight: 600 }, children: row.events[0].tool || 'Captured call' }),
-        jsx('span', { style: { ...muted, fontSize: 10 }, children: displayTime(row.events[0].time) }),
-      ] }),
-      jsx('div', { style: { ...muted, fontSize: 11, marginTop: 3 }, children: row.sources.map(sourceLabel).join(' · ') || 'Source unknown' }),
-      row.scores.length || scoreAbsence(row) ? jsx('div', { style: { fontVariantNumeric: 'tabular-nums', margin: '4px 0' }, children: row.scores.length ? row.scores.map((score, index) => jsx('div', { children: scoreSummary(score) }, index)) : scoreAbsence(row) }) : null,
-      jsx('div', { style: { fontSize: 11 }, children: row.execution === 'Tool returned' ? 'Tool returned · effects unverified' : row.execution }),
-      jsxs('details', { children: [
-        jsx('summary', { style: summary, children: row.reviewable.length ? 'Details & review' : 'Details' }),
-        definitions([['Session', row.events[0].session_id || 'Without a session'], ['Turn', row.events[0].turn_id || 'Unknown'], ['Tool call', row.events[0].tool_call_id || 'Unknown'], ['API request', row.events[0].api_request_id || 'Unknown'], ['Recorded status', [...new Set(row.events.map(e => e.status).filter(Boolean))].join(', ') || 'unknown']]),
-        ...row.events.map((event, index) => jsxs('div', { 'data-event-id': event.id, style: { paddingTop: 6 }, children: [
-          definitions([['Event ID', event.id]]),
-          jsx('div', { style: muted, children: event.detail || '' }),
-          ...eventScores(event).map((score, scoreIndex) => jsxs('div', { style: { ...muted, fontSize: 11, paddingTop: 4 }, children: [
-            jsx('div', { children: scoreSummary(score) }),
-            jsx('div', { children: `Threshold: ${Number.isFinite(score.threshold) ? score.threshold : 'Unknown'} · provisional · Scored: ${displayTime(score.time)}` }),
-          ] }, scoreIndex)),
-          event.reviewable !== false ? jsxs('div', { style: flow, children: [
-            jsx('span', { style: { ...muted, width: '100%', fontSize: 11 }, children: `Post-hoc review: ${event.human_label === 'authorized' ? 'Expected' : event.human_label || 'Not reviewed'}` }),
-            jsx('span', { style: { ...muted, width: '100%', fontSize: 11 }, children: 'Annotation only · no effect on execution.' }),
-            ...[['authorized', 'Expected'], ['unwanted', 'Unwanted'], ['insufficient-context', 'Insufficient context']].map(([value, text]) => jsx(Button, { variant: 'ghost', size: 'sm', style: { ...compactButton, border: event.human_label === value ? '1px solid var(--ui-accent)' : '1px solid transparent', background: event.human_label === value ? 'color-mix(in srgb, var(--ui-accent) 12%, transparent)' : 'transparent', fontWeight: event.human_label === value ? 600 : 400 }, disabled: busy !== null || !ready('review', event), 'aria-pressed': event.human_label === value, onClick: () => label(event, value), children: text }, value)),
-          ] }) : null,
-          eventErrors[event.id]?.review ? jsx('div', { role: 'alert', children: eventErrors[event.id].review }) : null,
-          event.inspectable === true ? jsx(Button, { variant: 'ghost', size: 'sm', style: compactButton, disabled: busy !== null || !ready('inspect', event), onClick: () => inspect(event), children: 'Inspect raw capture' }) : null,
-          eventErrors[event.id]?.inspect ? jsx('div', { role: 'alert', children: eventErrors[event.id].inspect }) : null,
-          raw?.id === event.id && ready('inspect', event) ? jsxs('div', { 'aria-label': 'Local-only raw capture', children: [jsx('div', { style: { ...muted, fontSize: 11, marginTop: 6 }, children: 'Raw capture · local-only display' }), jsx(Button, { variant: 'ghost', size: 'sm', style: compactButton, onClick: () => { ticket.current++; setRaw(null); }, children: 'Hide raw capture' }), jsx('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 240, overflowY: 'auto', padding: 8, border: '1px solid var(--ui-stroke-secondary)', borderRadius: 3, background: 'color-mix(in srgb, var(--ui-text-primary) 3%, transparent)', fontFamily: 'monospace', fontSize: 11, userSelect: 'text' }, children: raw.content }), raw.truncated ? jsx('div', { role: 'status', children: 'Raw capture truncated · response / display limit reached.' }) : null] }) : null,
-        ] }, `${event.id}:${index}`)),
-      ] }),
-    ] }, row.key)),
+    ...rows.map(renderRow),
+    jsxs('div', { 'aria-label': 'Evaluation & audit', style: block, children: [
+      jsx('h3', { style: heading, children: 'Evaluation & audit' }),
+      jsx('div', { style: { ...muted, fontSize: 11 }, children: 'Stored history · not current-run Guard traffic' }),
+      countGrid([['Judge captures', statusUnavailable ? null : status.data?.counts?.traffic_captures], ['Verification', statusUnavailable ? null : status.data?.counts?.verification_captures], ['Replay', statusUnavailable ? null : status.data?.counts?.replay_attempts], ['Reviews', statusUnavailable ? null : Object.hasOwn(status.data?.counts || {}, 'reviewed_events') ? status.data.counts.reviewed_events : status.data?.counts?.label_events]], 'Capture counts'),
+    ] }),
     jsxs('div', { 'aria-label': 'Replay controls', style: block, children: [
       jsx('h3', { style: heading, children: 'Replay' }),
       jsx('div', { style: { ...muted, fontSize: 11, marginBottom: 4 }, children: 'Manual · all sessions' }),

@@ -78,6 +78,8 @@
 !/trial/test_decision_models.py
 !/trial/test_judge_adapter.py
 !/trial/test_judge_models.py
+!/trial/test_managed_monitor.py
+!/trial/test_security_monitoring.py
 !/trial/test_observation_store.py
 !/trial/test_observe.py
 !/trial/test_replay_model.py
@@ -116,6 +118,7 @@
 !/trial/security-plugin/dashboard/
 !/trial/security-plugin/desktop/
 !/trial/security-plugin/identity.py
+!/trial/security-plugin/managed_monitor.py
 !/trial/security-plugin/plugin.yaml
 !/trial/security-plugin/service.py
 !/trial/security-plugin/telemetry.py
