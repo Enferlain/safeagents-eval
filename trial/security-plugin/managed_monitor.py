@@ -158,11 +158,19 @@ JUDGE_KEYS = ("consulted", "allow", "block", "errors", "last_consultation", "las
 CALL = re.compile(r"^(\d{2}:\d{2}:\d{2})  (#[1-9]\d*|) *  (PASS|WARN|FLAG|BLOCK) {2,}([A-Za-z_][\w./:-]*)(?: {2,}(.*))?$")
 VERDICTS = {"PASS": "passed", "WARN": "suspicious", "FLAG": "flagged", "BLOCK": "blocked"}
 SUPPORTED_SOURCE = {
-    "runs.py": "265ab004fcdaac1a73f88de2ceedb91e04541061e85c02a97f00ba4e07f0058b",
-    "monitor.py": "7ec347c31a809834959b836824ebe924ce063f2017051903e3f9c68a7dcce2e6",
-    "guard.py": "d460da9e905f13582d53cca53d22684b07bd0a72e89e58eb687aa1cb4aa01eb1",
+    "__init__.py": "bb02746542d773cea5a3706dfa7307ec5e993fb3ff22b6f2f013e709863f9347",
     "cli.py": "1702dbf2aa5cc0f689104ffa6d3d501795b1093073ff20c5cf3748b07a66052e",
     "constants.py": "74cc83781fbbc7fb3ccbddd18a208faa6191e3290179a487c85d875fba880338",
+    "guard.py": "d460da9e905f13582d53cca53d22684b07bd0a72e89e58eb687aa1cb4aa01eb1",
+    "journal.py": "f7719ab2d02a046dd54efc186bbe0c5fde1571e20c260f61ffb56bd5cc63c065",
+    "judge.py": "93ccd27849378c9eaeca3850ed32af7566db99611b1a2b35069d9b7d753bdbd9",
+    "monitor.py": "7ec347c31a809834959b836824ebe924ce063f2017051903e3f9c68a7dcce2e6",
+    "policy.py": "a1e906ee544f9b61f769c6b645e67541510259af1388e4e867d0e01af7b511cb",
+    "proxy.py": "ade5b869ffad0d0cd33b70de1117cc2ab829071448bd507b83347c937389b94b",
+    "rewrite.py": "a77b9ad60a17acb0c146e5dc3e322f5835aa79af01fdc004159f66415f05de33",
+    "runs.py": "265ab004fcdaac1a73f88de2ceedb91e04541061e85c02a97f00ba4e07f0058b",
+    "scan.py": "587b45a4fbbccdaf6ccfcae837d0fee6246a34aba3a93cc05ccbe910c4ed5eb3",
+    "scrub.py": "5eabb38719335b02f634fdb7851b85f0c4ab41a97197bab4a4f83468f301de88",
     "utils.py": "9de94d82fa98ad95569ed6397b3332d74892c45ff691ee66a3546d1f9da94b70",
 }
 
@@ -191,6 +199,11 @@ def _verify_package(package):
     metadata = list(package.parent.glob("safeagents-*.dist-info/METADATA"))
     _require(len(metadata) == 1)
     _require(re.findall(rb"^Version: (.+)$", _read(metadata[0], 262144, shared=True), re.M) == [b"0.0.1"])
+    # Exact pinned file set: every behavior-critical module (including
+    # __init__/proxy/scan/policy/judge/journal/rewrite) is hashed, and an
+    # unexpected extra or missing module fails verification outright.
+    present = sorted(path.name for path in package.glob("*.py"))
+    _require(present == sorted(SUPPORTED_SOURCE))
     for name, digest in SUPPORTED_SOURCE.items():
         _require(hashlib.sha256(_read(package / name, 262144, shared=True)).hexdigest() == digest)
 

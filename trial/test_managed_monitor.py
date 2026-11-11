@@ -43,8 +43,8 @@ class RunFixture:
         installed_spec = importlib.util.find_spec("safeagents")
         assert installed_spec is not None and installed_spec.origin is not None
         installed = Path(installed_spec.origin).parent
-        for name in ("__init__.py", "runs.py", "monitor.py", "guard.py", "cli.py", "constants.py", "utils.py"):
-            shutil.copyfile(installed / name, self.package / name)
+        for source in sorted(installed.glob("*.py")):
+            shutil.copyfile(source, self.package / source.name)
         dist = self.site / "safeagents-0.0.1.dist-info"
         dist.mkdir()
         (dist / "METADATA").write_text("Name: safeagents\nVersion: 0.0.1\n")
@@ -300,6 +300,18 @@ class ManagedMonitorTests(unittest.TestCase):
                 self.assertEqual(result["state"], "degraded")
                 self.assertIsNone(result["guard"]["reviewed"],
                                   'ambiguous evidence must not publish partial totals')
+
+    def test_package_manifest_requires_the_exact_pinned_file_set(self):
+        for case in ('extra-module', 'removed-module'):
+            with self.subTest(case=case):
+                f = self.fixture()
+                if case == 'extra-module':
+                    (f.package / 'extra.py').write_text('# rogue module\n')
+                else:
+                    (f.package / 'journal.py').unlink()
+                f.log.write_text(f.banner + f.call())
+                self.assertNotEqual(load_monitor().ManagedMonitor(f.run, f.proc).snapshot("safeagents-glm")["state"],
+                                    "verified")
 
     def test_pythonpath_entry_without_safeagents_verifies_the_resolved_install(self):
         for entry in ("plain-dir", "missing-dir", "empty-entry"):

@@ -1352,6 +1352,24 @@ test('recorder groups under Storage and technical failures stay out of review fi
   assert.match(visibleText(reopened), /Failed judge attempts: Unknown/);
 });
 
+test('error captures in all sessions render findings without review actions', () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  h.data.events.events = [
+    { id: 'capture:error', source: 'safeagents', session_id: null, tool: null, status: 'error',
+      execution: 'not_intercepted', reviewable: false, inspectable: false, time: 1794355210,
+      scores: [{ role: 'live', model: replayModels[0], score: null, threshold: .88, would_flag: null, error: true, provisional: true }] },
+  ];
+  h.nodes(h.draw()).find(n => n.props['aria-label'] === 'Activity scope').props.onChange({ target: { value: 'all' } });
+  const tree = h.draw(), nodes = h.nodes(tree);
+  const row = nodes.find(n => n.type === 'article'
+    && h.nodes(n).some(child => child.props['data-event-id'] === 'capture:error'));
+  assert.ok(row, 'the technical failure remains visible as an event');
+  assert.equal(h.nodes(row).some(n => n.props.children === 'Expected'), false,
+    'no review buttons on a technical failure in All sessions');
+  assert.match(visibleText(row), /Captured call/);
+  h.calls.length = 0;
+});
+
 test('invalid attention envelopes fail closed locally without erasing independent Guard and Ready judge evidence', async () => {
   const h = harness(); h.c.plugin.register(h.ctx);
   h.data.status.monitoring = monitoringFixture();

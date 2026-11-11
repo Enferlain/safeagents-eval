@@ -472,7 +472,10 @@ class SecurityService:
                            'verdict': None, 'signals': [], 'judge_consultation': 'unknown',
                            'scores': scores,
                            'would_flag': live['would_flag'],
-                           'human_label': labels.get(cid), 'reviewable': True,
+                           'human_label': labels.get(cid),
+                           # Technical failures (judge/inference/parsing) are health
+                           # evidence, never human-review findings — anywhere.
+                           'reviewable': row.get('error') is None,
                            'inspectable': isinstance(row.get('payload'), dict),
                            'detail': 'Unassociated proxy capture: no native session correlation; observation only.'})
         try:

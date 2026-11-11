@@ -222,6 +222,17 @@ class MonitoringTests(unittest.TestCase):
         self.assertEqual(observing['state'], 'observing')
 
 
+    def test_error_captures_are_not_reviewable_anywhere(self):
+        capture = dict(self.capture(), error='TimeoutError', payload=None, score=None,
+                       input_sha256=None, policy_sha256=None)
+        self.write('calls.jsonl', [capture])
+        event = self.service.events(all_sessions=True)['events'][0]
+        self.assertEqual(event['id'], capture['id'])
+        self.assertFalse(event['reviewable'], 'technical failures are health, not review findings')
+        with self.assertRaises(self.mod.SecurityError) as caught:
+            self.service.label(capture['id'], 'authorized')
+        self.assertEqual(caught.exception.status, 400)
+
     def test_ambiguous_capture_links_are_conflicts_not_two_matches(self):
         capture = self.capture()
         self.write('calls.jsonl', [capture])
