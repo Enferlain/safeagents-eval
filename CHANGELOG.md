@@ -6,6 +6,8 @@ All notable changes are recorded here. This project follows the [Keep a Changelo
 
 ### Added
 
+- `gemini_run.py`: gemini-decision-1 (Google Decisions API, `noul`) backend for the frozen SafeAgents judge bench — state serialized with the exact System One `js` macro, identical frozen question, per-row predictions/usage/latency, quota-aware pacing and a repair path for rate-limit errors. First result (562/562 valid after repairing 23 quota errors): AUROC 0.983, Brier 0.030, recall 96.7% / false-block 20.5% at the naive 0.5 cutoff.
+- `sweep_gemini.py`: offline threshold sweep and matched-FPR comparison over saved predictions; no model calls.
 - Read-only current-managed-run telemetry for recorded completed SafeAgents reviews and judge consultations, with process/lock/listener/log/source validation and unknown totals for incomplete evidence. Native provider attempts remain separate from proxy receipts.
 - Repeatable `--plugin` scanner options (order-preserving, file-path specs) in managed-run verification, and static import-resolution provenance: the first importable SafeAgents package on the process's path must hash-match the supported source across an exact pinned manifest of every module; PYTHONHOME stays refused and uv-style hardlinked installs verify by content.
 - Observation: Observing now requires a verified managed run for the watched route; an unverified-but-reachable proxy reports Degraded.
