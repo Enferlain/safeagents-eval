@@ -68,6 +68,7 @@
 /trial/*
 !/trial/OBSERVATION.md
 !/trial/SECURITY_APP.md
+!/trial/shadow_gemini.py
 !/trial/decision_models.py
 !/trial/fake_model.py
 !/trial/judge-policy-benchmark.txt
