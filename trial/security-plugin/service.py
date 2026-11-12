@@ -509,6 +509,9 @@ class SecurityService:
                                and item.get('severity') in ('info', 'low', 'medium', 'high', 'critical')]
                     events.append({'id': cid, 'time': stamp, 'session_id': None, 'turn_id': None, 'tool_call_id': None,
                                    'verdict': verdict, 'signals': signals, 'judge_consultation': consultation,
+                                   # Validated metadata only: an invalid journal tool becomes
+                                   # unavailable, never rendered as arbitrary title text.
+                                   'tool': identifier(row.get('tool')),
                                    'judge_outcome': outcome, 'review_id': cid, 'journal_id': cid,
                                    'call_id': index, 'capture_id': capture['id'] if capture else None,
                                    'identity_status': 'matched' if capture else 'partial',
@@ -516,7 +519,7 @@ class SecurityService:
                                    'review_conflict': False,
                                    'origin': 'verification' if capture and capture.get('origin') == 'verification' else 'traffic',
                                    'source': 'safeagents', 'status': 'error' if failure else 'observed',
-                                   'execution': 'not_intercepted', 'tool': None, 'scores': [],
+                                   'execution': 'not_intercepted', 'scores': [],
                                    'would_flag': verdict in ('flagged', 'blocked') if verdict is not None else None,
                                    'human_label': labels.get(cid),
                                    'reviewable': True, 'inspectable': False, 'detail': detail + ' Unassociated: no native session correlation.'})

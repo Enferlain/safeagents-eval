@@ -577,6 +577,9 @@ test('activity scores retain actual QEV-live/Lite-replay identities while outcom
   const details = h.nodes(rows[0]).find(n => n.type === 'details');
   assert.ok(details);
   details.props.open = true;
+  const technical = h.nodes(details).find(n => n.type === 'details'
+    && [n.props.children].flat().find(child => child?.type === 'summary')?.props?.children === 'Technical identity');
+  technical.props.open = true;
   assert.match(visibleText(details), /Verbose provider capture caveat/);
   assert.match(visibleText(details), /private-call-id/);
   assert.match(visibleText(details), /Inspect raw capture/);
@@ -585,7 +588,7 @@ test('activity scores retain actual QEV-live/Lite-replay identities while outcom
   assert.match(visibleText(details), /Threshold: 0.88 · provisional/);
   assert.match(visibleText(details), /Scored: /);
   assert.equal(h.nodes(rows[1]).some(n => n.type === 'Button'), false);
-  assert.doesNotMatch(text, /safe|%/i);
+  assert.doesNotMatch(text, /% *safe|Safe\b|safety/i);
 });
 
 test('missing score provenance is unknown, failures are not verdicts, and replay attempts are not collapsed', () => {
@@ -605,6 +608,9 @@ test('missing score provenance is unknown, failures are not verdicts, and replay
   assert.match(visibleText(rows[2]), /Replay · QEV 0.9 · Would flag/);
   assert.match(visibleText(rows[2]), /Replay · D3 Lite — · Score failed/);
   const details = h.nodes(rows[1]).find(n => n.type === 'details'); details.props.open = true;
+  const technical = h.nodes(details).find(n => n.type === 'details'
+    && [n.props.children].flat().find(child => child?.type === 'summary')?.props?.children === 'Technical identity');
+  technical.props.open = true;
   assert.match(visibleText(details), /Threshold: Unknown · provisional · Scored: Unknown/);
 });
 
@@ -638,6 +644,9 @@ test('execution states and request-qualified groups preserve distinct IDs withou
   for (const label of ['Blocked · not executed', 'Cancelled · effects unknown', 'Error · effects unknown', 'Tool returned · effects unverified', 'Proposed', 'Execution unknown']) assert.ok(text.includes(label), label);
   assert.match(visibleText(rows.at(-1)), /Error · effects unknown/);
   const details = h.nodes(rows[0]).find(n => n.type === 'details'); details.props.open = true;
+  const technical = h.nodes(details).find(n => n.type === 'details'
+    && [n.props.children].flat().find(child => child?.type === 'summary')?.props?.children === 'Technical identity');
+  technical.props.open = true;
   for (const label of ['Session: s', 'Turn: turn', 'Tool call: call', 'API request: request-0']) assert.ok(visibleText(details).includes(label));
   assert.equal(h.c.activityRows([{ ...base, id: 'legacy', execution: 'not_confirmed' }], 's', false, false)[0].execution, 'Proposed');
 });
@@ -970,6 +979,9 @@ test('expanded event identifiers and recorded status use wrapping definition val
   h.data.events.events = [{ id: `event-${long}`, session_id: 's', turn_id: `turn-${long}`, tool_call_id: `call-${long}`, api_request_id: `request-${long}`, status: 'completed', source: 'hermes', reviewable: false }];
   const row = h.nodes(h.draw()).find(n => n.type === 'article');
   const details = h.nodes(row).find(n => n.type === 'details'); details.props.open = true;
+  const technical = h.nodes(details).find(n => n.type === 'details'
+    && [n.props.children].flat().find(child => child?.type === 'summary')?.props?.children === 'Technical identity');
+  technical.props.open = true;
   const lists = h.nodes(details).filter(n => n.type === 'dl');
   assert.ok(lists.length);
   const values = lists.flatMap(list => h.nodes(list).filter(n => n.type === 'dd'));
@@ -1184,8 +1196,9 @@ test('monitoring hierarchy renders run Guard and Judge evidence before activity 
   for (const [label, outcome, stamp] of [['Last consultation', 'error', 1794355203], ['Last success', 'block', 1794355202], ['Last failure', 'error', 1794355203]]) {
     assert.ok(visibleText(section('Judge consultations')).includes(`${label}: ${h.c.displayTime(stamp)} · ${outcome}`));
   }
-  assert.match(text, /21 provider pre-request attempts/);
-  assert.match(text, /not proxy receipts/);
+  assert.match(text, /21 provider attempts/);
+  assert.match(text, /not SafeAgents receipts/);
+  assert.doesNotMatch(visibleText(section('Guard monitoring')), /provider attempts/);
   assert.ok(nodes.indexOf(section('Guard monitoring')) < nodes.findIndex(n => n.type === 'h3' && n.props.children === 'Activity'));
   const audit = section('Evaluation & audit');
   assert.match(visibleText(audit), /Stored history/);
@@ -1206,9 +1219,12 @@ test('monitoring distinguishes verified zero consultations from unverified, degr
   assert.match(sections().judge, /0 Consultations\s+0 Allow\s+0 Block\s+0 Errors/);
   assert.match(sections().judge, /Last consultation: None in current managed run/);
   h.data.status.monitoring = monitoringFixture({ state: 'unverified', guard: { reviewed: 0, passed: 0, warn: 0, flagged: 0, blocked: 0 }, judge: zeroJudge });
-  assert.match(sections().judge, /Unknown Consultations/);
-  assert.doesNotMatch(sections().judge, /None in current managed run|0 Consultations/);
-  assert.match(sections().guard, /Unknown Reviewed/);
+  assert.match(sections().guard, /No verified managed SafeAgents run\./);
+  assert.match(sections().guard, /Guard totals and policy unavailable\./);
+  assert.doesNotMatch(sections().guard, /Reviewed|Policy unknown/);
+  assert.match(sections().judge, /No verified managed SafeAgents run\./);
+  assert.match(sections().judge, /Judge consultation totals unavailable\./);
+  assert.doesNotMatch(sections().judge, /None in current managed run|0 Consultations|Unknown Consultations/);
   h.data.status.monitoring = monitoringFixture({ state: 'degraded', guard: { reviewed: 4, passed: null, warn: null, flagged: 2, blocked: null }, judge: { ...zeroJudge, consulted: null, allow: null, block: null, errors: 2 } });
   assert.match(sections().guard, /Degraded.*4 Reviewed\s+Unknown PASS/);
   assert.match(sections().judge, /Unknown Consultations\s+Unknown Allow\s+Unknown Block\s+2 Errors/);
@@ -1218,8 +1234,9 @@ test('monitoring distinguishes verified zero consultations from unverified, degr
     h.data.status.monitoring = failure === 'missing' ? undefined : monitoringFixture(failure === 'wrong-scope' ? { scope: 'stored_history' } : {});
     h.data.status.observed_at = failure === 'stale' ? 0 : new Date().toISOString();
     h.errors.status = failure === 'error' ? new Error('offline') : null;
-    assert.match(sections().guard, /Unknown Reviewed/, failure);
-    assert.match(sections().judge, /Unknown Consultations/, failure);
+    assert.match(sections().guard, /No verified managed SafeAgents run\./, failure);
+    assert.doesNotMatch(sections().guard, /Reviewed/, failure);
+    assert.match(sections().judge, /Judge consultation totals unavailable\./, failure);
     assert.doesNotMatch(sections().judge, /Last consultation:.*error/, failure);
   }
 });
@@ -1242,7 +1259,11 @@ test('Needs review leads native Activity with unassociated verdict, signals and 
   assert.match(text, /1 needs review/);
   assert.match(text, /Current managed run.*Unassociated with Hermes sessions/);
   assert.match(text, /not current-session findings/);
-  assert.match(text, /FLAG.*side_channel.model_call.*high.*Judge: Not consulted/);
+  assert.doesNotMatch(text, /Captured call/);
+  assert.match(text, /side_channel\.model_call/);
+  assert.match(text, /FLAG · HIGH/);
+  assert.match(text, /terminal · SafeAgents/);
+  assert.match(text, /Judge not consulted · blocking finding/);
   assert.ok(text.includes(h.c.displayTime(1794355205)));
   assert.doesNotMatch(text, /No model scores|score provenance|Execution unknown/);
   assert.ok(nodes.indexOf(attention) < nodes.findIndex(n => n.type === 'h3' && n.props.children === 'Activity'));
@@ -1273,8 +1294,8 @@ test('attention trusts only backend canonical joins, removes proven duplicates a
   assert.equal(nodes.filter(n => n.type === 'article').length, 4, 'joined capture duplicate removed but unproven capture and native event retained');
   assert.doesNotMatch(visibleText(tree), /duplicate-tool/);
   assert.match(visibleText(tree), /unproven-tool/);
-  assert.match(visibleText(attention), /Judge: Consulted · block/);
-  assert.match(visibleText(attention), /Live · QEV 0.95 · Would flag/);
+  assert.match(visibleText(attention), /Judge: QEV · Block · 0\.95/);
+  assert.doesNotMatch(visibleText(attention), /Would flag/);
   const row = h.nodes(attention).find(n => n.props['data-event-id'] === 'journal:joined');
   await h.nodes(row).find(n => n.props.children === 'Inspect raw capture').props.onClick();
   assert.equal(h.calls.at(-1).options.body.id, 'capture:joined');
@@ -1293,9 +1314,16 @@ test('attention keeps findings and needs-review totals separate and exposes iden
   const attention = h.nodes(h.draw()).find(n => n.props['aria-label'] === 'Needs review');
   const text = visibleText(attention);
   assert.match(text, /1 needs review.*2 recent findings/);
-  assert.match(text, /Review conflict.*Identity conflict/);
-  assert.match(text, /Identity partial/);
-  assert.match(text, /WARN.*Judge: Consultation unknown/);
+  assert.match(text, /Review conflict/);
+  assert.match(text, /Not correlated to a Hermes session/);
+  assert.match(text, /WARN.*Judge consultation unknown/);
+  const conflictRow = h.nodes(attention).find(n => n.type === 'article');
+  const conflictDetails = h.nodes(conflictRow).find(n => n.type === 'details');
+  conflictDetails.props.open = true;
+  assert.match(visibleText(conflictDetails), /Identity status: conflict/);
+  const partialRow = h.nodes(h.nodes(attention).filter(n => n.type === 'article')[1]).find(n => n.type === 'details');
+  partialRow.props.open = true;
+  assert.match(visibleText(partialRow), /Identity status: partial/);
   const conflict = h.nodes(attention).find(n => n.props['data-event-id'] === 'conflict');
   const labeled = h.nodes(attention).find(n => n.props['data-event-id'] === 'labeled');
   assert.equal(h.nodes(conflict).some(n => n.props['aria-pressed'] === true), false, 'conflicting historical labels do not present one selected value');
@@ -1407,3 +1435,4 @@ test('coverage separates observation from enforcement and distrusts stale or unk
   assert.equal(c.coverageView(status, new Error('offline'), now).label, 'Backend unavailable');
   assert.equal(c.coverageView(null, null, now).label, 'Checking coverage');
 });
+

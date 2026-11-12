@@ -365,7 +365,7 @@ class SecurityTests(unittest.TestCase):
         self.write('calls.jsonl', [self.capture('verification')])
         journal = self.repo / 'trial/local-journal.jsonl'
         journal.write_text(json.dumps(dict(id=7, time=101., verdict='flagged', judge=None,
-                                          arguments='TOPSECRET', tool='TOPSECRET')) + '\n')
+                                          arguments='TOPSECRET', tool='terminal')) + '\n')
         client = self.client()
         result = client.get('/events?all_sessions=true').json()
         self.assertEqual(len(result['events']), 1)

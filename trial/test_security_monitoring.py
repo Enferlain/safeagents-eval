@@ -65,17 +65,21 @@ class MonitoringTests(unittest.TestCase):
 
     def test_journal_exposes_sanitized_verdict_and_consultation(self):
         self.write('journal.jsonl', [
-            dict(id=1, time=100., verdict='flagged', judge=None,
+            dict(id=1, time=100., verdict='flagged', judge=None, tool='terminal',
                  signals=[{'id': 'side_channel.model_call', 'severity': 'high', 'title': 'TOPSECRET'}], arguments='TOPSECRET'),
-            dict(id=2, time=101., verdict='suspicious', signals=[]),
+            dict(id=2, time=101., verdict='suspicious', signals=[], tool='<script>alert(1)</script>'),
+            dict(id=3, time=102., verdict='suspicious', signals=[], tool='x' * 512),
         ], journal=True)
         events = sorted(self.service.events(all_sessions=True)['events'], key=lambda e: e['time'])
         self.assertEqual(events[0]['verdict'], 'flagged')
         self.assertEqual(events[0]['judge_consultation'], 'not_consulted')
         self.assertEqual(events[1]['judge_consultation'], 'unknown')
         self.assertEqual(events[0]['signals'], [{'id': 'side_channel.model_call', 'severity': 'high'}])
+        self.assertEqual(events[0]['tool'], 'terminal', 'validated journal tool is exposed metadata')
+        self.assertIsNone(events[1]['tool'], 'invalid tool values become unavailable, never rendered')
+        self.assertIsNone(events[2]['tool'], 'oversized tool values become unavailable')
         self.assertNotIn('TOPSECRET', json.dumps(events))
-
+        self.assertNotIn('script', json.dumps(events))
 
     def capture(self):
         return {'id': '3a31cd31-98fc-4324-94d2-e573796ee37e', 'time': 100.,

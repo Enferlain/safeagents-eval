@@ -20,6 +20,9 @@ All notable changes are recorded here. This project follows the [Keep a Changelo
 
 ### Changed
 
+- Security dashboard final cleanup: quiet two-line Guard/Judge state replaces Unknown grids when no managed run is verified; Hermes provider-attempt history moved out of Guard into its own section; findings are signal-first with the validated journal tool as secondary metadata; the judge summary is deduplicated (`D3 Lite · Allow · 0.436`, outcome distinct from any threshold interpretation); session-correlation wording is user-language; event IDs and technical identity are demoted to a nested disclosure.
+- Contextual-enforcement documentation rewritten around the settled no-fork chain (decision → correlation → public plugin surfaces → ALLOW/native ASK/DENY), with the YOLO/remembered-grants caveat as the open question.
+
 - Security Status adds native icons, theme-aware state dots, compact aligned component rows and a shorter permissions note. Full component names remain in Diagnostics; the chip tooltip no longer repeats open/close instructions.
 - Security sidebar now uses quiet Status values, grouped component-health summaries, one Activity section, readable event metadata, explicit unknown counts, distinct raw inspection and action-local errors. Full timestamps, visible Replay controls and existing observation/permission boundaries are preserved.
 - Git publication now uses an allowlist: private observations, local environments, downloaded benchmark bundles, generated artifacts and unreviewed workspace paths remain local.

@@ -149,27 +149,38 @@ function countGrid(entries, ariaLabel) {
 }
 function monitoringSections(status, unavailable) {
   const monitoring = !unavailable ? status?.monitoring : null;
-  const current = monitoring?.scope === 'current_managed_run' && ['verified', 'degraded'].includes(monitoring?.state);
-  const guard = current ? monitoring?.guard : null;
-  const judge = current ? monitoring?.judge : null;
-  const policy = current ? monitoring?.policy : null;
+  const active = monitoring?.scope === 'current_managed_run' && ['verified', 'degraded'].includes(monitoring?.state);
+  const guard = active ? monitoring?.guard : null;
+  const judge = active ? monitoring?.judge : null;
+  const policy = active ? monitoring?.policy : null;
   const route = !unavailable ? status?.route_activity : null;
   const enabled = value => value === true ? 'Enabled' : value === false ? 'Disabled' : 'Unknown';
+  const quiet = unavailableText => [
+    jsx('div', { style: { ...muted, fontSize: 11 }, children: 'No verified managed SafeAgents run.' }),
+    jsx('div', { style: { ...muted, fontSize: 11 }, children: unavailableText }),
+  ];
   return [
     jsxs('div', { 'aria-label': 'Guard monitoring', style: block, children: [
       jsx('h3', { style: heading, children: 'Guard' }),
-      jsx('div', { style: { ...muted, fontSize: 11 }, children: `Current managed run · ${monitoring?.state === 'verified' && current ? 'Verified' : monitoring?.state === 'degraded' && current ? 'Degraded' : 'Unknown'}` }),
-      countGrid([['Reviewed', guard?.reviewed], ['PASS', guard?.passed], ['WARN', guard?.warn], ['FLAG', guard?.flagged], ['BLOCK', guard?.blocked]]),
-      jsx('div', { style: { ...muted, fontSize: 11 }, children: `${policy?.mode === 'log-only' ? 'Log-only' : policy?.mode === 'enforcing' ? 'Enforcing' : 'Policy unknown'} · Scanner: ${enabled(policy?.scanner_enabled)} · Judge: ${enabled(policy?.judge_enabled)} · Journal: ${enabled(policy?.journal_enabled)}` }),
-      jsx('div', { style: { ...muted, fontSize: 11 }, children: `Block severity: ${policy?.block_severity || 'Unknown'} · Judge failure: ${policy?.judge_failure || 'Unknown'}` }),
+      ...(active ? [
+        jsx('div', { style: { ...muted, fontSize: 11 }, children: `Current managed run · ${monitoring.state === 'verified' ? 'Verified' : 'Degraded'}` }),
+        countGrid([['Reviewed', guard?.reviewed], ['PASS', guard?.passed], ['WARN', guard?.warn], ['FLAG', guard?.flagged], ['BLOCK', guard?.blocked]]),
+        jsx('div', { style: { ...muted, fontSize: 11 }, children: `${policy?.mode === 'log-only' ? 'Log-only' : policy?.mode === 'enforcing' ? 'Enforcing' : 'Policy unknown'} · Scanner: ${enabled(policy?.scanner_enabled)} · Judge: ${enabled(policy?.judge_enabled)} · Journal: ${enabled(policy?.journal_enabled)}` }),
+        jsx('div', { style: { ...muted, fontSize: 11 }, children: `Block severity: ${policy?.block_severity || 'Unknown'} · Judge failure: ${policy?.judge_failure || 'Unknown'}` }),
+      ] : quiet('Guard totals and policy unavailable.')),
       jsx('div', { style: { ...muted, fontSize: 11 }, children: monitoring?.detail || 'Managed-run monitoring unavailable; update/restart the Security backend if needed.' }),
-      jsx('div', { style: { ...muted, fontSize: 11, marginTop: 4 }, children: `${Number.isInteger(route?.attempts) && route.attempts >= 0 ? route.attempts : 'Unknown'} provider pre-request attempts · selected session · not proxy receipts · Last attempt: ${displayTime(route?.last_attempt)}` }),
+    ] }),
+    jsxs('div', { 'aria-label': 'Hermes route history', style: block, children: [
+      jsx('h3', { style: heading, children: 'Hermes route history' }),
+      jsx('div', { style: { ...muted, fontSize: 11 }, children: `${Number.isInteger(route?.attempts) && route.attempts >= 0 ? route.attempts : 'Unknown'} provider attempts · selected session · pre-request, not SafeAgents receipts · Last attempt: ${displayTime(route?.last_attempt)}` }),
     ] }),
     jsxs('div', { 'aria-label': 'Judge consultations', style: block, children: [
       jsx('h3', { style: heading, children: 'Judge' }),
-      jsx('div', { style: { ...muted, fontSize: 11 }, children: 'Current managed run · consultations, not runtime readiness' }),
-      countGrid([['Consultations', judge?.consulted], ['Allow', judge?.allow], ['Block', judge?.block], ['Errors', judge?.errors]]),
-      ...[['Last consultation', 'last_consultation'], ['Last success', 'last_success'], ['Last failure', 'last_failure']].map(([label, key]) => jsx('div', { style: { ...muted, fontSize: 11 }, children: `${label}: ${judge?.[key] ? `${displayTime(judge[key].time)} · ${judge[key].outcome}` : monitoring?.state === 'verified' && judge?.consulted === 0 ? 'None in current managed run' : 'Unknown'}` }, key)),
+      ...(active ? [
+        jsx('div', { style: { ...muted, fontSize: 11 }, children: 'Current managed run · consultations, not runtime readiness' }),
+        countGrid([['Consultations', judge?.consulted], ['Allow', judge?.allow], ['Block', judge?.block], ['Errors', judge?.errors]]),
+        ...[['Last consultation', 'last_consultation'], ['Last success', 'last_success'], ['Last failure', 'last_failure']].map(([label, key]) => jsx('div', { style: { ...muted, fontSize: 11 }, children: `${label}: ${judge?.[key] ? `${displayTime(judge[key].time)} · ${judge[key].outcome}` : monitoring.state === 'verified' && judge?.consulted === 0 ? 'None in current managed run' : 'Unknown'}` }, key)),
+      ] : quiet('Judge consultation totals unavailable.')),
     ] }),
   ];
 }
@@ -375,31 +386,57 @@ function SecurityPanel({ ctx, scope, status }) {
     } catch (error) { if (alive.current && sameScope(scope) && ticket.current === request) setEventError(event.id, 'inspect', `Inspect failed: ${error.message || error}`); }
     finally { if (alive.current && sameScope(scope) && ticket.current === request) setBusy(null); }
   }
-  const renderRow = row => jsx('article', { style: block, children: [
+  function judgeSummary(event, scores) {
+    const primaryScore = (scores || []).find(score => score && score.role === 'live') || (scores || [])[0];
+    const model = primaryScore ? modelLabel(primaryScore.model) : null;
+    const score = primaryScore && Number.isFinite(primaryScore.score) ? primaryScore.score : null;
+    if (event.judge_consultation === 'consulted') {
+      // Compact record of what the judge returned; the score is the judge's own
+      // output, never an interpretation against the threshold.
+      const outcome = ({ allow: 'Allow', block: 'Block', error: 'Error' })[event.judge_outcome] || 'Outcome unknown';
+      return `Judge: ${[model && model !== 'Unknown model' ? model : null, outcome, score].filter(value => value !== null).join(' · ')}`;
+    }
+    if (event.judge_consultation === 'not_consulted')
+      return event.would_flag === true || event.verdict === 'flagged' || event.verdict === 'blocked'
+        ? 'Judge not consulted · blocking finding' : 'Judge not consulted';
+    return 'Judge consultation unknown';
+  }
+  const renderRow = row => {
+    const primary = row.events[0];
+    const signals = Array.isArray(primary.signals) ? primary.signals : [];
+    const verdictTag = ({ passed: 'PASS', suspicious: 'WARN', flagged: 'FLAG', blocked: 'BLOCK' })[primary.verdict];
+    // Findings are signal-first: the primary detector signal names the finding,
+    // the validated journal tool is secondary metadata.
+    const title = row.attention
+      ? (signals[0]?.id || verdictTag || 'SafeAgents finding')
+      : (primary.tool || 'Captured call');
+    return jsx('article', { style: block, children: [
       jsxs('div', { style: { ...flow, justifyContent: 'space-between' }, children: [
-        jsx('strong', { style: { minWidth: 0, overflowWrap: 'anywhere', fontWeight: 600 }, children: row.events[0].tool || 'Captured call' }),
-        jsx('span', { style: { ...muted, fontSize: 10 }, children: displayTime(row.events[0].time) }),
+        jsx('strong', { style: { minWidth: 0, overflowWrap: 'anywhere', fontWeight: 600 }, children: title }),
+        jsx('span', { style: { ...muted, fontSize: 10 }, children: displayTime(primary.time) }),
       ] }),
-      jsx('div', { style: { ...muted, fontSize: 11, marginTop: 3 }, children: row.sources.map(sourceLabel).join(' · ') || 'Source unknown' }),
+      jsx('div', { style: { ...muted, fontSize: 11, marginTop: 3 }, children: row.attention
+        ? `${primary.tool || 'Tool unknown'} · SafeAgents`
+        : (row.sources.map(sourceLabel).join(' · ') || 'Source unknown') }),
       row.attention ? jsxs('div', { style: { fontSize: 11, marginTop: 3 }, children: [
-        jsx('strong', { children: ({ passed: 'PASS', suspicious: 'WARN', flagged: 'FLAG', blocked: 'BLOCK' })[row.events[0].verdict] || 'Verdict unknown' }),
-        ...(Array.isArray(row.events[0].signals) ? row.events[0].signals : []).map((signal, i) => jsx('div', { children: `${signal.id || 'Unknown signal'} · ${signal.severity || 'Unknown severity'}` }, i)),
-        jsx('div', { children: `Judge: ${row.events[0].judge_consultation === 'not_consulted' ? 'Not consulted' : row.events[0].judge_consultation === 'consulted' ? `Consulted · ${row.events[0].judge_outcome || 'Outcome unknown'}` : 'Consultation unknown'}` }),
-        row.events[0].review_conflict === true ? jsx('div', { style: { color: 'var(--ui-yellow)' }, children: 'Review conflict · historical annotations disagree' }) : null,
-        ['partial', 'conflict'].includes(row.events[0].identity_status) ? jsx('div', { style: muted, children: `Identity ${row.events[0].identity_status} · detector records only, not session correlation` }) : null,
+        jsx('strong', { children: [verdictTag || 'Verdict unknown', signals[0]?.severity ? ` · ${signals[0].severity.toUpperCase()}` : ''].join('') }),
+        ...signals.slice(1).map((signal, i) => jsx('div', { children: `${signal.id || 'Unknown signal'} · ${signal.severity || 'Unknown severity'}` }, i)),
+        jsx('div', { children: judgeSummary(primary, row.scores) }),
+        primary.review_conflict === true ? jsx('div', { style: { color: 'var(--ui-yellow)' }, children: 'Review conflict · historical annotations disagree' }) : null,
+        ['partial', 'conflict'].includes(primary.identity_status) ? jsx('div', { style: muted, children: 'Not correlated to a Hermes session' }) : null,
       ] }) : null,
-      row.scores.length || (!row.attention || row.events[0].judge_consultation !== 'not_consulted') && scoreAbsence(row) ? jsx('div', { style: { fontVariantNumeric: 'tabular-nums', margin: '4px 0' }, children: row.scores.length ? row.scores.map((score, index) => jsx('div', { children: scoreSummary(score) }, index)) : scoreAbsence(row) }) : null,
+      !row.attention && (row.scores.length || scoreAbsence(row)) ? jsx('div', { style: { fontVariantNumeric: 'tabular-nums', margin: '4px 0' }, children: row.scores.length ? row.scores.map((score, index) => jsx('div', { children: scoreSummary(score) }, index)) : scoreAbsence(row) }) : null,
       !row.attention ? jsx('div', { style: { fontSize: 11 }, children: row.execution === 'Tool returned' ? 'Tool returned · effects unverified' : row.execution }) : null,
       jsxs('details', { children: [
         jsx('summary', { style: summary, children: row.reviewable.length ? 'Details & review' : 'Details' }),
-        definitions([['Session', row.events[0].session_id || 'Without a session'], ['Turn', row.events[0].turn_id || 'Unknown'], ['Tool call', row.events[0].tool_call_id || 'Unknown'], ['API request', row.events[0].api_request_id || 'Unknown'], ['Recorded status', [...new Set(row.events.map(e => e.status).filter(Boolean))].join(', ') || 'unknown']]),
+        ...(row.attention && row.scores.length ? [
+          jsx('div', { style: { ...muted, fontSize: 11 }, children: 'Judge' }),
+          definitions(row.scores.map(score => [({ live: 'Live', replay: 'Replay' })[score.role] || 'Score',
+            `${Number.isFinite(score.score) ? score.score : 'Unknown'} · Threshold: ${Number.isFinite(score.threshold) ? score.threshold : 'Unknown'} · provisional · Scored: ${displayTime(score.time)}`])),
+        ] : []),
+        ...(row.attention && ['partial', 'conflict'].includes(primary.identity_status)
+          ? [jsx('div', { style: muted, children: `Identity status: ${primary.identity_status}` })] : []),
         ...row.events.map((event, index) => jsxs('div', { 'data-event-id': event.id, style: { paddingTop: 6 }, children: [
-          definitions([['Event ID', event.id]]),
-          jsx('div', { style: muted, children: event.detail || '' }),
-          ...eventScores(event).map((score, scoreIndex) => jsxs('div', { style: { ...muted, fontSize: 11, paddingTop: 4 }, children: [
-            jsx('div', { children: scoreSummary(score) }),
-            jsx('div', { children: `Threshold: ${Number.isFinite(score.threshold) ? score.threshold : 'Unknown'} · provisional · Scored: ${displayTime(score.time)}` }),
-          ] }, scoreIndex)),
           event.reviewable !== false ? jsxs('div', { style: flow, children: [
             jsx('span', { style: { ...muted, width: '100%', fontSize: 11 }, children: `Post-hoc review: ${event.review_conflict === true ? 'Conflict' : event.human_label === 'authorized' ? 'Expected' : event.human_label || 'Not reviewed'}` }),
             jsx('span', { style: { ...muted, width: '100%', fontSize: 11 }, children: 'Annotation only · no effect on execution.' }),
@@ -410,8 +447,21 @@ function SecurityPanel({ ctx, scope, status }) {
           eventErrors[event.id]?.inspect ? jsx('div', { role: 'alert', children: eventErrors[event.id].inspect }) : null,
           raw?.id === event.id && ready('inspect', event) ? jsxs('div', { 'aria-label': 'Local-only raw capture', children: [jsx('div', { style: { ...muted, fontSize: 11, marginTop: 6 }, children: 'Raw capture · local-only display' }), jsx(Button, { variant: 'ghost', size: 'sm', style: compactButton, onClick: () => { ticket.current++; setRaw(null); }, children: 'Hide raw capture' }), jsx('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 240, overflowY: 'auto', padding: 8, border: '1px solid var(--ui-stroke-secondary)', borderRadius: 3, background: 'color-mix(in srgb, var(--ui-text-primary) 3%, transparent)', fontFamily: 'monospace', fontSize: 11, userSelect: 'text' }, children: raw.content }), raw.truncated ? jsx('div', { role: 'status', children: 'Raw capture truncated · response / display limit reached.' }) : null] }) : null,
         ] }, `${event.id}:${index}`)),
+        jsxs('details', { style: { paddingTop: 6 }, children: [
+          jsx('summary', { style: summary, children: 'Technical identity' }),
+          definitions([['Session', primary.session_id || 'Without a session'], ['Turn', primary.turn_id || 'Unknown'], ['Tool call', primary.tool_call_id || 'Unknown'], ['API request', primary.api_request_id || 'Unknown'], ['Recorded status', [...new Set(row.events.map(e => e.status).filter(Boolean))].join(', ') || 'unknown']]),
+          ...row.events.map(event => jsxs('div', { style: { paddingTop: 4 }, children: [
+            definitions([['Event ID', event.id]]),
+            jsx('div', { style: muted, children: event.detail || '' }),
+            ...eventScores(event).map((score, scoreIndex) => jsxs('div', { style: { ...muted, fontSize: 11, paddingTop: 4 }, children: [
+              jsx('div', { children: scoreSummary(score) }),
+              jsx('div', { children: `Threshold: ${Number.isFinite(score.threshold) ? score.threshold : 'Unknown'} · provisional · Scored: ${displayTime(score.time)}` }),
+            ] }, scoreIndex)),
+          ] }, `technical:${event.id}`)),
+        ] }),
       ] }),
     ] }, row.key);
+  };
   return jsxs('section', { 'aria-label': 'Security', style: { minWidth: 0, lineHeight: 1.45, overflowWrap: 'anywhere' }, children: [
     jsxs('div', { style: { ...flow, justifyContent: 'space-between', marginBottom: 6 }, children: [
       jsx('span', { style: muted, children: 'Session' }),

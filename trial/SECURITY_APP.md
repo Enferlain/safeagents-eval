@@ -95,26 +95,30 @@ Retaining `api_request_id` does not establish exact SafeAgents detector-to-tool 
 - QEV comparison is user-initiated, local, non-executing, one run at a time, with visible state and exit status. No schedule is installed.
 - Storage remains plaintext local, owner-only and Git-ignored. No automatic retention deletion.
 
-## Contextual enforcement: blocked on a Hermes API extension
+## Contextual enforcement: public plugin surfaces, no Hermes fork
 
-Verified in the running installed Hermes package:
-`/nix/store/8y4hn81hp51fmicd9020li00gw2sbi88-hermes-agent-0.0.0/lib/python3.14/site-packages/`
+Settled direction (checked against current Hermes upstream): **no Hermes fork and no core patch.** The chain is:
 
-1. `hermes_cli/plugins.py:1087-1207`: approve directives preserve message/rule_key only. Final merged args do not reach the approval gate; another hook may modify args after an individual hook inspected them.
-2. `tools/approval.py:1208-1233`: generic tool approval has no structured args or once-only restriction. It shares session/permanent grants and configurable automatic approval behavior.
-3. `tools/approval.py:144-178`: shared native queue resolver correlates request IDs but does not validate choices against per-request restrictions before settling.
-4. `hermes_cli/approval_transport.py`: immutable requests and allowed-choice validation exist for an optional transport, but the generic plugin action gate has transport disabled. A transport plugin alone does not fix the native flow.
+```text
+SafeAgents decision
+        ↓
+exact Hermes ↔ SafeAgents correlation
+        ↓
+public Hermes plugin/middleware surfaces
+        ↓
+ALLOW → execute · ASK → native Hermes approval · DENY → block with a reason
+```
 
-Do not monkeypatch Nix-store core, create a second permission queue, block for human input inside a time-bounded plugin callback, or depend on a middleware exception to prevent execution. The panel must state contextual enforcement is not enabled until the following extension is implemented and verified.
+The pane and backend never substitute a second permission queue and never monkeypatch Nix-store core; detection connects to the native gate, and a held call must not execute before the human decision settles it.
 
-### Smallest core extension to prepare separately
+Known upstream approval behaviors the integration must design around (observed in the installed Hermes package):
 
-- Add explicit contextual/once-only mode and complete final argument snapshot to approve directives and native approval requests.
-- Resolve all argument modifications before the contextual decision; freeze and canonicalize the exact tool name/args/session/tool-call identity presented for consent. Execute that same snapshot after approval.
-- Permit only `once` and `deny`; reject other choices at the shared backend resolver before removing the pending request. Validate every response route, including alternate clients and slash-command paths. Never write a contextual consent into any session/permanent allowlist.
-- Existing broad grants, smart review, unattended autoapproval, YOLO and approvals-off must not silently satisfy a fresh contextual ASK. No human approval surface means fail closed for that ASK.
-- Include full local inspectable arguments plus a safe human-readable effect summary; keep deliberate secret redaction distinct from actual executed payload.
-- Reuse native pending request lifecycle, request IDs, settlement and desktop cards. No second UI queue.
+1. `hermes_cli/plugins.py`: approve directives preserve message/rule_key only; another hook may modify args after an individual hook inspected them.
+2. `tools/approval.py`: generic tool approval has no structured args or once-only restriction and shares session/permanent grants.
+3. The shared native queue resolver correlates request IDs but does not validate choices against per-request restrictions before settling.
+4. The optional immutable approval transport exists but is not wired to the generic plugin action gate.
+
+The open question is therefore **ASK semantics around YOLO / remembered grants** — broad grants, smart review, unattended autoapproval and approvals-off must not silently satisfy a fresh contextual ASK, and no human approval surface must fail closed — not "patch Hermes before enforcement can exist." If the public surfaces genuinely cannot express once-only contextual consent, that gap goes upstream as a Hermes issue, not a local fork.
 
 ### Required end-to-end tests before claiming Active
 
