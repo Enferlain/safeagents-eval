@@ -49,6 +49,7 @@
 /page/*
 !/page/analysis_metrics.py
 !/page/analyze.py
+!/page/gemini_run.py
 !/page/prepare.py
 !/page/run_model.py
 !/page/runner.py
@@ -98,6 +99,7 @@
 /xaab/*
 !/xaab/README.md
 !/xaab/analyze_comparison.py
+!/xaab/gemini_run.py
 !/xaab/run_comparison.py
 !/xaab/runner.py
 !/xaab/test_runner.py
