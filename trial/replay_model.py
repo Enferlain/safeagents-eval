@@ -1,7 +1,7 @@
 """Offline replay using one fixed trusted model on an owned temporary server."""
-import base64
 import json
-import shlex
+import os
+import signal
 import socket
 import subprocess
 import sys
@@ -17,15 +17,30 @@ from observe import ENDPOINT, PrivateParser
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTABLE = '/mnt/d/textgen/2026/llama-b12236-bin-win-cuda-13.5-x64/llama-server.exe'
 NATIVE_BINARY = r'D:\textgen\2026\llama-b12236-bin-win-cuda-13.5-x64\llama-server.exe'
-POWERSHELL = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'
 
 
-def _powershell(script):
-    # Capture in memory for the caller's owner-only logs, never run.ps's shared file.
-    encoded = base64.b64encode(script.encode('utf-16le')).decode('ascii')
-    result = subprocess.run([POWERSHELL, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
-                            capture_output=True, text=True, check=True, timeout=30)
-    return result.stdout.strip()
+def _wrapper_argv(pid):
+    """Argv of the WSL /init interop wrapper that supervises the launched
+    Windows child: ['/init', EXECUTABLE, EXECUTABLE, *launch_args]."""
+    return [token.decode('utf-8', 'surrogateescape')
+            for token in Path('/proc/%d/cmdline' % int(pid)).read_bytes().split(b'\0') if token]
+
+
+def _owned_process(server, launch):
+    """Ownership without a PowerShell round-trip. The /init wrapper exists
+    solely as the launch handle for our exact executable and arguments, and
+    terminating it terminates the Windows child (verified on this host).
+    Replaces the CIM/Stop-Process path that broke for PTY-less parents
+    (powershell.exe -EncodedCommand exits 1 when spawned from the gateway
+    service or background terminals since the 2026-11-13 boot)."""
+    try:
+        tokens = _wrapper_argv(server.pid)
+    except (OSError, ValueError):
+        raise RuntimeError('owned model process not identified') from None
+    if (len(tokens) != len(launch) + 3 or tokens[0] != '/init'
+            or tokens[1] != EXECUTABLE or tokens[2] != EXECUTABLE or tokens[3:] != launch):
+        raise RuntimeError('owned command mismatch')
+    return {'wsl_pid': server.pid, 'argv': tokens}
 
 
 def health_request():
@@ -41,24 +56,6 @@ def _port_free():
     with socket.socket() as sock:
         sock.settimeout(.5)
         return sock.connect_ex(('127.0.0.1', 18874)) != 0
-
-
-def _owned_process(query, launch):
-    found = json.loads(_powershell('ConvertTo-Json -Compress -InputObject @(' + query +
-                                   ' | Select-Object ProcessId,ExecutablePath,CommandLine)'))
-    if not isinstance(found, list) or len(found) != 1:
-        raise RuntimeError('owned model process not identified')
-    process = found[0]
-    pid = process.get('ProcessId')
-    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
-        raise RuntimeError('invalid owned process ID')
-    if str(process.get('ExecutablePath', '')).casefold() != NATIVE_BINARY.casefold():
-        raise RuntimeError('owned executable mismatch')
-    command = process.get('CommandLine')
-    tokens = shlex.split(command, posix=False) if isinstance(command, str) else []
-    if len(tokens) != len(launch) + 1 or tokens[0].strip('"').casefold() != NATIVE_BINARY.casefold() or tokens[1:] != launch:
-        raise RuntimeError('owned command mismatch')
-    return process
 
 
 def run_model(store, model_key, limit=0, include_probes=False):
@@ -80,9 +77,6 @@ def run_model(store, model_key, limit=0, include_probes=False):
               '--no-webui', '--no-agent', '--offline', '--alias', alias]
     logs.write_text('launch.json', json.dumps({'model_key': model_key, 'binary': NATIVE_BINARY,
                                              'args': launch}, indent=2) + '\n')
-    query = ('Get-CimInstance Win32_Process -Filter "name = \'llama-server.exe\'" | '
-             "Where-Object { $_.ExecutablePath -eq '" + NATIVE_BINARY +
-             "' -and $_.CommandLine -like '*--port 18874*--alias " + alias + "*' }")
     server = None
     owned = None
     for name in ('server.stdout.log', 'server.stderr.log', 'replay.stdout.log', 'replay.stderr.log'):
@@ -92,7 +86,7 @@ def run_model(store, model_key, limit=0, include_probes=False):
         with (logs.path / 'server.stdout.log').open('a') as out, (logs.path / 'server.stderr.log').open('a') as err:
             server = subprocess.Popen([EXECUTABLE, *launch], stdout=out, stderr=err)
         time.sleep(2)
-        owned = _owned_process(query, launch)
+        owned = _owned_process(server, launch)
         logs.write_text('owned-process.json', json.dumps(owned, indent=2) + '\n')
         deadline = time.monotonic() + 180
         while True:
@@ -118,19 +112,23 @@ def run_model(store, model_key, limit=0, include_probes=False):
         return result.returncode
     finally:
         if server is not None:
-            # Even startup failures may leave a Windows child; rediscover only our
-            # exact unique alias/executable/arguments. Never stop a port's occupant.
-            if owned is None:
-                owned = _owned_process(query, launch)
-            pid = owned['ProcessId']
-            encoded_command = base64.b64encode(owned['CommandLine'].encode('utf-8')).decode('ascii')
-            expected = "[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + encoded_command + "'))"
-            cleanup = _powershell(f"$p=Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}'; "
-                                  f"if ($p -and $p.ExecutablePath -eq '{NATIVE_BINARY}' -and $p.CommandLine -ceq ({expected})) "
-                                  f"{{ Stop-Process -Id {pid} -ErrorAction Stop; 'stopped exact owned replay model' }} "
-                                  "elseif (!$p) { 'owned replay model already exited' } "
-                                  "else { throw 'Process identity changed; refusing stop' }")
-            logs.write_text('cleanup.txt', cleanup + '\n')
+            # Even startup failures may leave the Windows child running under its
+            # /init wrapper; stop only our exact verified argv, never a port's occupant.
+            detail = 'owned replay model already exited'
+            if owned is None and server.poll() is None:
+                try:
+                    owned = _owned_process(server, launch)
+                except (RuntimeError, OSError, ValueError):
+                    owned = None
+            if owned is not None:
+                try:
+                    os.kill(owned['wsl_pid'], signal.SIGTERM)
+                    detail = 'stopped exact owned replay model'
+                except ProcessLookupError:
+                    detail = 'owned replay model already exited'
+                except OSError as exc:
+                    logs.write_text('cleanup-error.txt', type(exc).__name__ + '\n')
+            logs.write_text('cleanup.txt', detail + '\n')
             server.wait(timeout=20)
             for _ in range(30):
                 if _port_free():

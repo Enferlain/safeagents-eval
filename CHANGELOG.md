@@ -35,6 +35,8 @@ All notable changes are recorded here. This project follows the [Keep a Changelo
 
 ### Fixed
 
+- Pane Replay fails everywhere with an instant `exit 1` since the 2026-11-13 boot: `powershell.exe -EncodedCommand` (used for owned-process discovery and cleanup) exits 1 when spawned from PTY-less parents such as the gateway service or background terminals, and failed cleanup also left orphaned replay servers holding port 18874, which then failed every subsequent attempt at the port check. Replay now owns its temporary server WSL-side: the `/init` interop wrapper's `/proc/<pid>/cmdline` is verified against the exact executable and launch arguments, and cleanup terminates that verified wrapper (which stops the Windows child). The PowerShell round-trip is removed entirely; ownership guarantees are unchanged (exact argv match, never a port's unknown occupant). Verified live: QEV replay scored 10 pending captures and released the port from a PTY-less background run.
+
 - Capture-recording write failures no longer degrade independent judge readiness or observation-route health.
 - Recorded uvicorn runtime errors (including chained tracebacks) no longer erase corroborated review totals; they keep the run degraded and are counted, never rendered.
 - A single failed capture record no longer suppresses the whole Needs-review feed; capture-error findings share the attention schema with journal findings.

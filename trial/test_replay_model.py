@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from test_observe import FixtureStore, capture
 
@@ -40,30 +40,28 @@ class ReplayModelTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             redirect.redirect_request(None, None, 302, '', {}, 'https://example.invalid')
 
-    def test_powershell_uses_only_fixed_executable_and_captured_output(self):
-        import base64
-        from types import SimpleNamespace
+    def test_owned_process_pins_wrapper_argv_without_powershell(self):
         module = self.module()
-        with patch.object(module.subprocess, 'run', return_value=SimpleNamespace(stdout=' inert output\n')) as run:
-            self.assertEqual(module._powershell('INERT_SCRIPT'), 'inert output')
-        command = run.call_args.args[0]
-        self.assertEqual(command[:4], [module.POWERSHELL, '-NoProfile', '-NonInteractive', '-EncodedCommand'])
-        self.assertEqual(base64.b64decode(command[4]).decode('utf-16le'), 'INERT_SCRIPT')
-        self.assertEqual(run.call_args.kwargs, {'capture_output': True, 'text': True, 'check': True, 'timeout': 30})
+        self.assertFalse(hasattr(module, '_powershell'), 'PowerShell round-trips removed from the replay lifecycle')
+        server = MagicMock()
+        server.pid = 4321
+        argv = ['/init', module.EXECUTABLE, module.EXECUTABLE, '-m', 'D:/x.gguf', '--alias', 'a']
+        with patch.object(module, '_wrapper_argv', return_value=argv):
+            owned = module._owned_process(server, ['-m', 'D:/x.gguf', '--alias', 'a'])
+        self.assertEqual(owned['wsl_pid'], 4321)
 
     def test_occupied_port_refuses_launch_without_cleanup(self):
         module = self.module()
         self.store.append('calls.jsonl', capture())
         with patch.object(module, '_port_free', return_value=False), \
              patch.object(module.subprocess, 'Popen') as start, \
-             patch.object(module, '_powershell') as powershell, contextlib.redirect_stdout(io.StringIO()) as output:
+             patch.object(module.os, 'kill') as kill, contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(module.main(['--store', str(self.store.path), '--model', 'lite'], store_factory=FixtureStore), 1)
         start.assert_not_called()
-        powershell.assert_not_called()
+        kill.assert_not_called()
         self.assertEqual(output.getvalue().strip(), 'error: RuntimeError')
 
     def test_replay_failure_still_cleans_up_the_owned_server(self):
-        import subprocess
         from types import SimpleNamespace
         from unittest.mock import MagicMock
         module = self.module()
@@ -71,20 +69,19 @@ class ReplayModelTests(unittest.TestCase):
         for failure in ('replay-exit', 'replay-exception', 'readiness-timeout', 'server-exit', 'readiness-error'):
             owned = {}
             server = MagicMock()
+            server.pid = 4321
             server.poll.return_value = 1 if failure == 'server-exit' else None
-            def start(command, owned=owned, server=server, **kwargs):
-                owned['process'] = {'ProcessId': 12345, 'ExecutablePath': module.NATIVE_BINARY,
-                                    'CommandLine': subprocess.list2cmdline([module.NATIVE_BINARY, *command[1:]])}
+            def start(command, owned=owned, **kwargs):
+                owned['launch'] = list(command[1:])
                 return server
-            scripts = []
-            def powershell(script, scripts=scripts, owned=owned):
-                scripts.append(script)
-                return 'stopped exact owned replay model' if 'Stop-Process' in script else json.dumps([owned['process']])
+            def wrapper_argv(pid, owned=owned):
+                return ['/init', module.EXECUTABLE, module.EXECUTABLE, *owned['launch']]
             with patch.object(module, '_port_free', return_value=True), \
                  patch.object(module.subprocess, 'Popen', side_effect=start), \
+                 patch.object(module, '_wrapper_argv', side_effect=wrapper_argv), \
+                 patch.object(module.os, 'kill') as kill, \
                  patch.object(module.subprocess, 'run', return_value=SimpleNamespace(returncode=6),
                               side_effect=ConnectionError('INERT_PRIVATE_FAILURE') if failure == 'replay-exception' else None) as run, \
-                 patch.object(module, '_powershell', side_effect=powershell), \
                  patch.object(module, 'health_request', return_value={'status': 'loading' if failure == 'readiness-timeout' else 'ok'},
                               side_effect=[ConnectionError('INERT_PRIVATE_FAILURE'), {'status': 'ok'}] if failure == 'readiness-error' else None), \
                  patch.object(module.time, 'monotonic', side_effect=[0, 1, 181] if failure == 'readiness-error' else [0, 181]), \
@@ -92,7 +89,8 @@ class ReplayModelTests(unittest.TestCase):
                 code = module.main(['--store', str(self.store.path), '--model', 'lite'], store_factory=FixtureStore)
             self.assertEqual(code, 6 if failure in ('replay-exit', 'readiness-error') else 1)
             server.wait.assert_called_once_with(timeout=20)
-            self.assertTrue(any('Stop-Process' in s for s in scripts))
+            kill.assert_called_once()
+            self.assertEqual(kill.call_args.args[0], 4321)
             if failure in ('readiness-timeout', 'server-exit'):
                 run.assert_not_called()
             self.assertNotIn('INERT_PRIVATE', output.getvalue())
@@ -101,20 +99,20 @@ class ReplayModelTests(unittest.TestCase):
                 self.assertEqual([path.read_text() for path in errors], ['ConnectionError\n'])
 
     def test_unverified_ownership_is_never_stopped(self):
-        from unittest.mock import MagicMock
         module = self.module()
         self.store.append('calls.jsonl', capture())
-        for found in ([], [{}, {}], [{'ProcessId': 42, 'ExecutablePath': 'INERT_PRIVATE_UNRELATED', 'CommandLine': 'bad'}],
-                      [{'ProcessId': True, 'ExecutablePath': module.NATIVE_BINARY, 'CommandLine': 'bad'}],
-                      [{'ProcessId': 42, 'ExecutablePath': module.NATIVE_BINARY, 'CommandLine': 'wrong args'}]):
+        for argv in ([], ['/init'], ['/init', module.EXECUTABLE, 'INERT_PRIVATE_UNRELATED', '-m', 'x'],
+                      ['/init', module.EXECUTABLE, module.EXECUTABLE, 'wrong', 'args'],
+                      ['/bin/something-else', module.EXECUTABLE, module.EXECUTABLE, '-m', 'x']):
             with patch.object(module, '_port_free', return_value=True), \
-                 patch.object(module.subprocess, 'Popen', return_value=MagicMock()), \
+                 patch.object(module.subprocess, 'Popen', return_value=MagicMock()) as start, \
+                 patch.object(module, '_wrapper_argv', return_value=argv), \
+                 patch.object(module.os, 'kill') as kill, \
                  patch.object(module.subprocess, 'run') as replay, \
-                 patch.object(module, '_powershell', return_value=json.dumps(found)) as powershell, \
                  patch.object(module.time, 'sleep'), contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(module.main(['--store', str(self.store.path), '--model', 'qev'], store_factory=FixtureStore), 1)
             replay.assert_not_called()
-            self.assertTrue(all('Stop-Process' not in call.args[0] for call in powershell.call_args_list))
+            kill.assert_not_called()
             self.assertNotIn('INERT_PRIVATE', output.getvalue())
 
     def test_modules_import_without_startup_network_store_or_audit_effects(self):
@@ -172,32 +170,29 @@ print('imports inert')
             replay.assert_not_called()
 
     def test_selected_weights_launch_replay_and_cleanup_only_owned_process(self):
-        import subprocess
         from types import SimpleNamespace
         from unittest.mock import MagicMock
         module = self.module()
         self.assertTrue(hasattr(module, 'run_model'), 'owned temporary model lifecycle must exist')
         self.store.append('calls.jsonl', capture())
-        native = r'D:\textgen\2026\llama-b12236-bin-win-cuda-13.5-x64\llama-server.exe'
         for key, filename in [('lite', 'vllm-d3-lite-Q8_0.gguf'), ('qev', 'qev-0.8b-text-Q8_0.gguf')]:
             owned = {}
-            scripts = []
             server = MagicMock()
+            server.pid = 5309
             server.poll.return_value = None
-            def start(command, owned=owned, server=server, **kwargs):
+            def start(command, owned=owned, **kwargs):
                 owned['command'] = command
-                owned['process'] = {'ProcessId': 12345, 'ExecutablePath': native,
-                                    'CommandLine': subprocess.list2cmdline([native, *command[1:]])}
+                owned['launch'] = list(command[1:])
                 return server
-            def powershell(script, scripts=scripts, owned=owned):
-                scripts.append(script)
-                return 'stopped exact owned replay model' if 'Stop-Process' in script else json.dumps([owned['process']])
+            def wrapper_argv(pid, owned=owned):
+                return ['/init', module.EXECUTABLE, module.EXECUTABLE, *owned['launch']]
             sock = MagicMock()
             sock.__enter__.return_value.connect_ex.return_value = 1
             with patch.object(module.subprocess, 'Popen', side_effect=start), \
+                 patch.object(module, '_wrapper_argv', side_effect=wrapper_argv), \
+                 patch.object(module.os, 'kill') as kill, \
                  patch.object(module.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as run, \
                  patch.object(module.socket, 'socket', return_value=sock), \
-                 patch.object(module, '_powershell', side_effect=powershell), \
                  patch.object(module, 'health_request', return_value={'status': 'ok'}), \
                  patch.object(module.time, 'sleep'), contextlib.redirect_stdout(io.StringIO()):
                 code = module.main(['--store', str(self.store.path), '--model', key, '--limit', '3',
@@ -218,9 +213,8 @@ print('imports inert')
             self.assertIn('--include-probes', replay_command)
             self.assertEqual(replay_command[replay_command.index('--limit') + 1], '3')
             self.assertEqual(run.call_args.kwargs['cwd'], module.ROOT)
-            self.assertIn('ProcessId = 12345', scripts[-1])
-            self.assertIn('CommandLine', scripts[-1])
-            self.assertNotIn('18872', ''.join(scripts))
+            kill.assert_called_once()
+            self.assertEqual(kill.call_args.args[0], 5309)
             server.wait.assert_called_once_with(timeout=20)
         for path in self.store.path.glob('replay-runs/*/*'):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
