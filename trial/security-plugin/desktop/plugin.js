@@ -147,6 +147,14 @@ function countGrid(entries, ariaLabel) {
     jsx('div', { style: { ...muted, fontSize: 10, overflowWrap: 'anywhere' }, children: label }),
   ] }, label)) });
 }
+function scopeTrim(value, sessionId) {
+  // Hermes composes turn/api-request IDs as session:task:turn; when the task
+  // equals the session the prefix renders twice. Trim one leading repetition
+  // for display only — the stored identifiers stay untouched.
+  if (typeof value !== 'string' || !sessionId || !value.startsWith(sessionId + ':')) return value;
+  return value.slice(sessionId.length + 1);
+}
+
 function monitoringSections(status, unavailable) {
   const monitoring = !unavailable ? status?.monitoring : null;
   const active = monitoring?.scope === 'current_managed_run' && ['verified', 'degraded'].includes(monitoring?.state);
@@ -464,7 +472,11 @@ function SecurityPanel({ ctx, scope, status }) {
         ] }, `${event.id}:${index}`)),
         jsxs('details', { style: { paddingTop: 6 }, children: [
           jsx('summary', { style: summary, children: 'Technical identity' }),
-          definitions([['Session', primary.session_id || 'Without a session'], ['Turn', primary.turn_id || 'Unknown'], ['Tool call', primary.tool_call_id || 'Unknown'], ['API request', primary.api_request_id || 'Unknown'], ['Recorded status', [...new Set(row.events.map(e => e.status).filter(Boolean))].join(', ') || 'unknown']]),
+          definitions([['Session', primary.session_id || 'Without a session'],
+                       ['Turn', scopeTrim(primary.turn_id, primary.session_id) || 'Unknown'],
+                       ['Tool call', primary.tool_call_id || 'Unknown'],
+                       ['API request', scopeTrim(primary.api_request_id, primary.session_id) || 'Unknown'],
+                       ['Recorded status', [...new Set(row.events.map(e => e.status).filter(Boolean))].join(', ') || 'unknown']]),
           ...row.events.map(event => jsxs('div', { style: { paddingTop: 4 }, children: [
             definitions([['Event ID', event.id]]),
             row.attention && event.detail ? jsx('div', { style: muted, children: event.detail }) : null,

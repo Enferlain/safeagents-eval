@@ -1502,3 +1502,22 @@ test('diagnostics discloses pane refresh and status data age', () => {
   assert.match(text, /Pane refresh: \d+s ago/, 'pane liveness must be visible');
   assert.match(text, /status data \d+s old/, 'status data age must be visible');
 });
+
+test('technical identity trims the redundant session prefix from turn and api-request ids', () => {
+  const h = harness(); h.c.plugin.register(h.ctx); h.open();
+  h.data.events.events = [
+    { id: 'native', session_id: 's', turn_id: 's:s:a11fbbec',
+      api_request_id: 's:s:a11fbbec:api:2',
+      tool: 'vision_analyze', source: 'hermes', execution: 'tool_returned', reviewable: false },
+  ];
+  const row = h.nodes(h.draw()).find(n => n.type === 'article');
+  const details = h.nodes(row).find(n => n.type === 'details'); details.props.open = true;
+  const nested = h.nodes(details).find(n => n.type === 'details'
+    && [n.props.children].flat().find(child => child?.type === 'summary')?.props?.children === 'Technical identity');
+  nested.props.open = true;
+  const text = visibleText(nested);
+  assert.match(text, /Turn: s:a11fbbec/, 'session prefix appears once');
+  assert.match(text, /API request: s:a11fbbec:api:2/);
+  assert.doesNotMatch(text, /s:s:/, 'no duplicated session prefix in display');
+});
+
