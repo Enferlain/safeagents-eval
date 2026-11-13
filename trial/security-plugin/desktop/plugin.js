@@ -430,6 +430,11 @@ function SecurityPanel({ ctx, scope, status }) {
     const title = row.attention
       ? (signals[0]?.id || verdictTag || 'SafeAgents finding')
       : (primary.tool || 'Captured call');
+    // Bare inert rows (no judgment, no review, no inspection, no scores) have
+    // nothing to organize behind a second disclosure: identity flattens.
+    const flattenIdentity = !row.attention && !row.scores.length
+      && row.events.every(event => event.reviewable === false && event.inspectable !== true
+        && !eventErrors[event.id]);
     return jsx('article', { style: block, children: [
       jsxs('div', { style: { ...flow, justifyContent: 'space-between' }, children: [
         jsx('strong', { style: { minWidth: 0, overflowWrap: 'anywhere', fontWeight: 600 }, children: title }),
@@ -456,6 +461,7 @@ function SecurityPanel({ ctx, scope, status }) {
         ] : []),
         ...(row.attention && ['partial', 'conflict'].includes(primary.identity_status)
           ? [jsx('div', { style: muted, children: `Identity status: ${primary.identity_status}` })] : []),
+        ...(!flattenIdentity ? [
         ...row.events.map((event, index) => jsxs('div', { 'data-event-id': event.id, style: { paddingTop: 6 }, children: [
           // Activity rows carry their detail line at the first level; only the
           // raw IDs and per-event scores stay nested under Technical identity.
@@ -486,6 +492,23 @@ function SecurityPanel({ ctx, scope, status }) {
             ] }, scoreIndex)),
           ] }, `technical:${event.id}`)),
         ] }),
+        ] : [
+          // Bare lifecycle rows: nothing to organize behind a second toggle —
+          // the identity IS the content, flattened into the first level.
+          definitions([['Session', primary.session_id || 'Without a session'],
+                       ['Turn', scopeTrim(primary.turn_id, primary.session_id) || 'Unknown'],
+                       ['Tool call', primary.tool_call_id || 'Unknown'],
+                       ['API request', scopeTrim(primary.api_request_id, primary.session_id) || 'Unknown'],
+                       ['Recorded status', [...new Set(row.events.map(e => e.status).filter(Boolean))].join(', ') || 'unknown']]),
+          ...row.events.map(event => jsxs('div', { style: { paddingTop: 4 }, children: [
+            definitions([['Event ID', event.id]]),
+            event.detail ? jsx('div', { style: { ...muted, fontSize: 11 }, children: event.detail }) : null,
+            ...eventScores(event).map((score, scoreIndex) => jsxs('div', { style: { ...muted, fontSize: 11, paddingTop: 4 }, children: [
+              jsx('div', { children: scoreSummary(score) }),
+              jsx('div', { children: `Threshold: ${Number.isFinite(score.threshold) ? score.threshold : 'Unknown'} · provisional · Scored: ${displayTime(score.time)}` }),
+            ] }, scoreIndex)),
+          ] }, `flat:${event.id}`)),
+        ]),
       ] }),
     ] }, row.key);
   };

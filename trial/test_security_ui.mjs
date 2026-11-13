@@ -644,9 +644,6 @@ test('execution states and request-qualified groups preserve distinct IDs withou
   for (const label of ['Blocked · not executed', 'Cancelled · effects unknown', 'Error · effects unknown', 'Tool returned · effects unverified', 'Proposed', 'Execution unknown']) assert.ok(text.includes(label), label);
   assert.match(visibleText(rows.at(-1)), /Error · effects unknown/);
   const details = h.nodes(rows[0]).find(n => n.type === 'details'); details.props.open = true;
-  const technical = h.nodes(details).find(n => n.type === 'details'
-    && [n.props.children].flat().find(child => child?.type === 'summary')?.props?.children === 'Technical identity');
-  technical.props.open = true;
   for (const label of ['Session: s', 'Turn: turn', 'Tool call: call', 'API request: request-0']) assert.ok(visibleText(details).includes(label));
   assert.equal(h.c.activityRows([{ ...base, id: 'legacy', execution: 'not_confirmed' }], 's', false, false)[0].execution, 'Proposed');
 });
@@ -979,9 +976,9 @@ test('expanded event identifiers and recorded status use wrapping definition val
   h.data.events.events = [{ id: `event-${long}`, session_id: 's', turn_id: `turn-${long}`, tool_call_id: `call-${long}`, api_request_id: `request-${long}`, status: 'completed', source: 'hermes', reviewable: false }];
   const row = h.nodes(h.draw()).find(n => n.type === 'article');
   const details = h.nodes(row).find(n => n.type === 'details'); details.props.open = true;
-  const technical = h.nodes(details).find(n => n.type === 'details'
-    && [n.props.children].flat().find(child => child?.type === 'summary')?.props?.children === 'Technical identity');
-  technical.props.open = true;
+  assert.equal(h.nodes(details).some(n => n.type === 'details'
+    && [n.props.children].flat().find(child => child?.type === 'summary')?.props?.children === 'Technical identity'), false,
+    'bare lifecycle rows flatten identity instead of nesting a second toggle');
   const lists = h.nodes(details).filter(n => n.type === 'dl');
   assert.ok(lists.length);
   const values = lists.flatMap(list => h.nodes(list).filter(n => n.type === 'dd'));
@@ -1487,10 +1484,8 @@ test('plain activity rows show their detail text at the first details level, not
   const details = h.nodes(row).find(n => n.type === 'details'); details.props.open = true;
   const visible = visibleText(details);
   assert.match(visible, /Native lifecycle caveat/, 'detail text must appear at the first details level');
-  const nested = h.nodes(details).find(n => n.type === 'details'
-    && [n.props.children].flat().find(child => child?.type === 'summary')?.props?.children === 'Technical identity');
-  nested.props.open = true;
-  assert.match(visibleText(nested), /Event ID/, 'technical identity still carries the IDs');
+  assert.equal(h.nodes(details).some(n => n !== details && [n.props?.children].flat().find(child => child?.type === 'summary')?.props?.children === 'Technical identity'), false, 'no nested toggle on a bare row');
+  assert.match(visible, /Event ID/, 'identity flattens into the first level');
 });
 
 test('diagnostics discloses pane refresh and status data age', () => {
@@ -1512,12 +1507,10 @@ test('technical identity trims the redundant session prefix from turn and api-re
   ];
   const row = h.nodes(h.draw()).find(n => n.type === 'article');
   const details = h.nodes(row).find(n => n.type === 'details'); details.props.open = true;
-  const nested = h.nodes(details).find(n => n.type === 'details'
-    && [n.props.children].flat().find(child => child?.type === 'summary')?.props?.children === 'Technical identity');
-  nested.props.open = true;
-  const text = visibleText(nested);
+  const text = visibleText(details);
   assert.match(text, /Turn: s:a11fbbec/, 'session prefix appears once');
   assert.match(text, /API request: s:a11fbbec:api:2/);
   assert.doesNotMatch(text, /s:s:/, 'no duplicated session prefix in display');
 });
+
 
