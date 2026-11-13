@@ -1531,3 +1531,16 @@ test('pane scrolls through the SDK ScrollArea, not raw CSS overflow', () => {
   assert.equal(pane.props.style.overflowY, undefined, 'no raw overflow on the root');
   assert.ok(h.nodes(scroller).some(n => n.props['aria-label'] === 'Security'), 'panel renders inside the scroll area');
 });
+
+test('review label buttons form an equal-width centered row', () => {
+  const h = harness(); h.c.plugin.register(h.ctx); h.open();
+  const row = h.nodes(h.draw()).find(n => n.type === 'article');
+  const details = h.nodes(row).find(n => n.type === 'details'); details.props.open = true;
+  const buttons = ['Expected', 'Unwanted', 'Insufficient context'].map(label =>
+    h.nodes(details).find(n => n.type === 'Button' && n.props.children === label));
+  for (const [i, button] of buttons.entries()) {
+    assert.ok(button, `button ${i} present`);
+    assert.equal(button.props.style.flex, '1 1 0', `button ${i} takes an equal cell`);
+    assert.equal(button.props.style.textAlign, 'center', `button ${i} centers its label`);
+  }
+});
