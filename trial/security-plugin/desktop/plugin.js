@@ -279,7 +279,10 @@ function SecurityPane({ ctx }) {
   const visible = useValue(host.paneVisibility(PANE_ID));
   const status = useResource(ctx, scope, 'status', `/status?session_id=${encodeURIComponent(scope[2] || '')}`);
   // Hiding/closing a docked pane also unmounts raw inspection state.
-  return visible ? jsx('div', { style: { height: '100%', minHeight: 0, overflowY: 'auto', padding: 12, boxSizing: 'border-box', color: 'var(--ui-text-primary)', fontSize: 12 },
+  // No self-made scroll container: the workspace tile owns scrolling (same
+  // pattern as the LLM Usage pane). A height:100%/overflow wrapper here fought
+  // the tile's fluid height basis — scrollbars stuck or never appeared.
+  return visible ? jsx('div', { style: { padding: 12, boxSizing: 'border-box', color: 'var(--ui-text-primary)', fontSize: 12 },
     children: jsx(SecurityPanel, { ctx, scope, status }, JSON.stringify(scope)),
   }) : null;
 }

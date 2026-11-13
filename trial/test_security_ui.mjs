@@ -1514,3 +1514,11 @@ test('technical identity trims the redundant session prefix from turn and api-re
 });
 
 
+
+test('pane does not create its own scroll context; the workspace tile scrolls', () => {
+  const h = harness(); h.c.plugin.register(h.ctx); h.open();
+  const pane = h.nodes(h.draw()).find(n => n.type === 'div' && n.props.style?.padding === 12);
+  assert.ok(pane, 'pane wrapper exists');
+  assert.equal(pane.props.style.overflowY, undefined, 'no self-made scroll container');
+  assert.equal(pane.props.style.height, undefined, 'no percentage-height dependency on the tile');
+});
