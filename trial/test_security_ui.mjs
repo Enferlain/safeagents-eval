@@ -63,7 +63,7 @@ function harness(initialValues = {}) {
   const state = new Map(), queries = [], calls = [], effects = [], errors = {};
   let slots, cursor, visited;
   const el = (type, props = {}, key) => ({ type, props, key });
-  const sdk = Object.fromEntries(['Button', 'Tip', 'Codicon', 'Popover', 'PopoverContent', 'PopoverTrigger'].map(k => [k, k]));
+  const sdk = Object.fromEntries(['Button', 'Tip', 'Codicon', 'Popover', 'PopoverContent', 'PopoverTrigger', 'ScrollArea'].map(k => [k, k]));
   const values = { profile: 'default', gateway: 'local', connectionId: 'local', activeSessionId: 'runtime-s', focusedStoredSessionId: 's', focusedSessionOwner: { connectionId: 'local', profile: 'default' }, ...initialValues };
   const host = { state: Object.fromEntries(Object.keys(values).map(k => [k, { get: () => values[k], listen: () => () => {} }])) };
   host.paneVisibility = id => ({ listen: () => () => {}, get: () => id === 'plugin-workspace:llm-usage' || (id === 'plugin-workspace:local-agent-security' && !!values.paneVisible) });
@@ -1515,10 +1515,19 @@ test('technical identity trims the redundant session prefix from turn and api-re
 
 
 
-test('pane does not create its own scroll context; the workspace tile scrolls', () => {
+test('pane does not create a raw CSS scroll context', () => {
   const h = harness(); h.c.plugin.register(h.ctx); h.open();
   const pane = h.nodes(h.draw()).find(n => n.type === 'div' && n.props.style?.padding === 12);
   assert.ok(pane, 'pane wrapper exists');
-  assert.equal(pane.props.style.overflowY, undefined, 'no self-made scroll container');
-  assert.equal(pane.props.style.height, undefined, 'no percentage-height dependency on the tile');
+  assert.equal(pane.props.style.overflowY, undefined, 'scrolling belongs to the SDK ScrollArea, not raw overflow');
+});
+
+test('pane scrolls through the SDK ScrollArea, not raw CSS overflow', () => {
+  const h = harness(); h.c.plugin.register(h.ctx); h.open();
+  const pane = h.nodes(h.draw()).find(n => n.type === 'div' && n.props.style?.display === 'flex' && n.props.style?.flexDirection === 'column');
+  assert.ok(pane, 'pane root is a flex column filling the tile');
+  const scroller = h.nodes(pane).find(n => n.type === 'ScrollArea');
+  assert.ok(scroller, 'SDK ScrollArea owns scrolling');
+  assert.equal(pane.props.style.overflowY, undefined, 'no raw overflow on the root');
+  assert.ok(h.nodes(scroller).some(n => n.props['aria-label'] === 'Security'), 'panel renders inside the scroll area');
 });

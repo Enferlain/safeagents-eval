@@ -1,4 +1,4 @@
-import { Button, Tip, Codicon, host, useQuery, useValue } from '@hermes/plugin-sdk';
+import { Button, Tip, Codicon, ScrollArea, host, useQuery, useValue } from '@hermes/plugin-sdk';
 import { jsx, jsxs } from 'react/jsx-runtime';
 import { useState, useRef, useEffect } from 'react';
 
@@ -279,11 +279,12 @@ function SecurityPane({ ctx }) {
   const visible = useValue(host.paneVisibility(PANE_ID));
   const status = useResource(ctx, scope, 'status', `/status?session_id=${encodeURIComponent(scope[2] || '')}`);
   // Hiding/closing a docked pane also unmounts raw inspection state.
-  // No self-made scroll container: the workspace tile owns scrolling (same
-  // pattern as the LLM Usage pane). A height:100%/overflow wrapper here fought
-  // the tile's fluid height basis — scrollbars stuck or never appeared.
-  return visible ? jsx('div', { style: { padding: 12, boxSizing: 'border-box', color: 'var(--ui-text-primary)', fontSize: 12 },
-    children: jsx(SecurityPanel, { ctx, scope, status }, JSON.stringify(scope)),
+  // Scrolling follows the LLM Usage pane pattern: the root fills the tile as a
+  // flex column and the SDK's ScrollArea owns the scrollbar (its thumb paints
+  // reliably; raw overflowY on a height:100% wrapper produced stuck/missing
+  // scrollbars, and no scroll container left the scrollbar unpainted).
+  return visible ? jsx('div', { style: { height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', padding: 12, boxSizing: 'border-box', color: 'var(--ui-text-primary)', fontSize: 12 },
+    children: jsx(ScrollArea, { style: { flex: '1 1 0', minHeight: 0 }, children: jsx(SecurityPanel, { ctx, scope, status }, JSON.stringify(scope)) }),
   }) : null;
 }
 function securityDock() {
