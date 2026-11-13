@@ -1542,5 +1542,6 @@ test('review label buttons form an equal-width centered row', () => {
     assert.ok(button, `button ${i} present`);
     assert.equal(button.props.style.flex, '1 1 0', `button ${i} takes an equal cell`);
     assert.equal(button.props.style.textAlign, 'center', `button ${i} centers its label`);
+    assert.notEqual(button.props.style.border, '1px solid transparent', `button ${i} has a visible outline so it reads as a button`);
   }
 });
