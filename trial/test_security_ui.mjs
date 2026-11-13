@@ -1436,3 +1436,69 @@ test('coverage separates observation from enforcement and distrusts stale or unk
   assert.equal(c.coverageView(null, null, now).label, 'Checking coverage');
 });
 
+
+test('DEBUG update-arrival keeps details toggles and review buttons live', async () => {
+  const h = harness(); h.c.plugin.register(h.ctx); h.open();
+  const first = attentionEvent({ id: 'journal:one', journal_id: 'journal:one', review_id: 'journal:one', reviewable: true });
+  h.data.status.attention = { healthy: true, scope: 'stored_history', needs_review: 1, events: [first] };
+  h.draw();
+  const late = attentionEvent({ id: 'journal:two', journal_id: 'journal:two', review_id: 'journal:two', reviewable: true });
+  h.data.status.attention = { healthy: true, scope: 'stored_history', needs_review: 2, events: [first, late] };
+  const tree = h.draw(), attention = h.nodes(tree).find(n => n.props['aria-label'] === 'Needs review');
+  const articles = h.nodes(attention).filter(n => n.type === 'article');
+  console.error('articles after update:', articles.length);
+  const details = h.nodes(articles[0]).find(n => n.type === 'details');
+  details.props.open = true;
+  const expected = h.nodes(details).find(n => n.props.children === 'Expected');
+  console.error('Expected button present:', !!expected);
+  if (expected) {
+    await expected.props.onClick();
+    console.error('label call recorded:', h.calls.filter(c => (c.path || '').includes('label')).length);
+  }
+});
+
+test('review buttons recover after a transient subsystem and status outage clears', async () => {
+  const h = harness(); h.c.plugin.register(h.ctx); h.open();
+  const button = tree => h.nodes(tree).find(n => n.type === 'Button' && n.props.children === 'Expected');
+  let tree = h.draw();
+  assert.equal(button(tree).props.disabled, false, 'baseline: review enabled');
+  // outage: status errors AND review subsystem reports unhealthy (judge down with pane open)
+  h.errors.status = new Error('offline');
+  h.data.status.subsystems = { review: { healthy: false, detail: 'Review unavailable' } };
+  h.data.status.observed_at = 0;
+  tree = h.draw();
+  assert.equal(button(tree).props.disabled, true, 'during outage: review disabled');
+  // recovery: backend healthy again, fresh status
+  delete h.errors.status;
+  delete h.data.status.subsystems;
+  h.data.status.observed_at = Date.now() / 1000;
+  tree = h.draw();
+  assert.equal(button(tree).props.disabled, false, 'after recovery: review must re-enable');
+  await button(tree).props.onClick();
+  assert.ok(h.calls.some(c => (c.path || '').includes('label')), 'label write must go through after recovery');
+});
+
+test('plain activity rows show their detail text at the first details level, not only nested', () => {
+  const h = harness(); h.c.plugin.register(h.ctx); h.open();
+  h.data.events.events = [
+    { id: 'plain', session_id: 's', tool: 'write', source: 'hermes', execution: 'tool_returned', reviewable: false, detail: 'Native lifecycle caveat' },
+  ];
+  const row = h.nodes(h.draw()).find(n => n.type === 'article');
+  const details = h.nodes(row).find(n => n.type === 'details'); details.props.open = true;
+  const visible = visibleText(details);
+  assert.match(visible, /Native lifecycle caveat/, 'detail text must appear at the first details level');
+  const nested = h.nodes(details).find(n => n.type === 'details'
+    && [n.props.children].flat().find(child => child?.type === 'summary')?.props?.children === 'Technical identity');
+  nested.props.open = true;
+  assert.match(visibleText(nested), /Event ID/, 'technical identity still carries the IDs');
+});
+
+test('diagnostics discloses pane refresh and status data age', () => {
+  const h = harness(); h.c.plugin.register(h.ctx); h.open();
+  h.data.status.observed_at = Date.now() / 1000 - 30;
+  const diag = h.nodes(h.draw()).find(n => n.type === 'details' && h.nodes(n).some(c => c.type === 'summary' && c.props.children === 'Diagnostics'));
+  diag.props.open = true;
+  const text = visibleText(diag);
+  assert.match(text, /Pane refresh: \d+s ago/, 'pane liveness must be visible');
+  assert.match(text, /status data \d+s old/, 'status data age must be visible');
+});

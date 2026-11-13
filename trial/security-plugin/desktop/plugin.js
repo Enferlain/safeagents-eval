@@ -289,6 +289,18 @@ function SecurityPanel({ ctx, scope, status }) {
   const [replayError, setReplayError] = useState('');
   const [replayModel, setReplayModel] = useState('');
   const [startingReplay, setStartingReplay] = useState(null);
+  // Liveness heartbeat: re-render every few seconds while the pane is mounted
+  // and its JS is alive. If the pane ever freezes (dead poller, caught render
+  // error), the "Pane refresh" age in Diagnostics stops counting up and the
+  // freeze becomes visible instead of silent (2026-11-12 click-deadness).
+  const [paneTick, setPaneTick] = useState(() => Date.now());
+  // Timer globals are absent in sandboxed render contexts (test VM); the
+  // heartbeat is best-effort and must not break rendering without them.
+  useEffect(() => {
+    if (typeof setInterval !== 'function') return;
+    const timer = setInterval(() => setPaneTick(Date.now()), 5000);
+    return () => { if (typeof clearInterval === 'function') clearInterval(timer); };
+  }, []);
   const replayPending = useRef(false);
   const alive = useRef(true);
   const ticket = useRef(0);
@@ -437,6 +449,9 @@ function SecurityPanel({ ctx, scope, status }) {
         ...(row.attention && ['partial', 'conflict'].includes(primary.identity_status)
           ? [jsx('div', { style: muted, children: `Identity status: ${primary.identity_status}` })] : []),
         ...row.events.map((event, index) => jsxs('div', { 'data-event-id': event.id, style: { paddingTop: 6 }, children: [
+          // Activity rows carry their detail line at the first level; only the
+          // raw IDs and per-event scores stay nested under Technical identity.
+          !row.attention && event.detail ? jsx('div', { style: { ...muted, fontSize: 11 }, children: event.detail }) : null,
           event.reviewable !== false ? jsxs('div', { style: flow, children: [
             jsx('span', { style: { ...muted, width: '100%', fontSize: 11 }, children: `Post-hoc review: ${event.review_conflict === true ? 'Conflict' : event.human_label === 'authorized' ? 'Expected' : event.human_label || 'Not reviewed'}` }),
             jsx('span', { style: { ...muted, width: '100%', fontSize: 11 }, children: 'Annotation only · no effect on execution.' }),
@@ -452,7 +467,7 @@ function SecurityPanel({ ctx, scope, status }) {
           definitions([['Session', primary.session_id || 'Without a session'], ['Turn', primary.turn_id || 'Unknown'], ['Tool call', primary.tool_call_id || 'Unknown'], ['API request', primary.api_request_id || 'Unknown'], ['Recorded status', [...new Set(row.events.map(e => e.status).filter(Boolean))].join(', ') || 'unknown']]),
           ...row.events.map(event => jsxs('div', { style: { paddingTop: 4 }, children: [
             definitions([['Event ID', event.id]]),
-            jsx('div', { style: muted, children: event.detail || '' }),
+            row.attention && event.detail ? jsx('div', { style: muted, children: event.detail }) : null,
             ...eventScores(event).map((score, scoreIndex) => jsxs('div', { style: { ...muted, fontSize: 11, paddingTop: 4 }, children: [
               jsx('div', { children: scoreSummary(score) }),
               jsx('div', { children: `Threshold: ${Number.isFinite(score.threshold) ? score.threshold : 'Unknown'} · provisional · Scored: ${displayTime(score.time)}` }),
@@ -497,6 +512,7 @@ function SecurityPanel({ ctx, scope, status }) {
       jsx('div', { style: muted, children: status.data?.observation?.detail || '' }),
       jsx('div', { style: muted, children: `Last-recorded provider: ${status.data?.observation?.provider || 'Unknown'}` }),
       jsx('div', { style: muted, children: `Last checked: ${view.checked}${view.stale ? ' · stale / unavailable' : ''}` }),
+      jsx('div', { style: muted, children: `Pane refresh: ${Math.max(0, Math.round((Date.now() - paneTick) / 1000))}s ago${Number.isFinite(status.data?.observed_at) ? ` · status data ${Math.max(0, Math.round(Date.now() / 1000 - status.data.observed_at))}s old` : ''}` }),
       jsx('div', { style: muted, children: `Live judge: ${status.data?.judge?.detail || 'No verified model identity recorded'}` }),
       jsx('div', { style: muted, children: `Failed judge attempts: ${Number.isInteger(attention?.failed_judge_attempts) ? attention.failed_judge_attempts : 'Unknown'} · recorded, excluded from review${Number.isInteger(status.data?.judge?.capture_errors) ? ` · capture write errors: ${status.data.judge.capture_errors}` : ''}` }),
       Number.isFinite(status.data?.judge?.threshold) ? jsx('div', { style: muted, children: `Live judge threshold: ${status.data.judge.threshold} · provisional` }) : null,
