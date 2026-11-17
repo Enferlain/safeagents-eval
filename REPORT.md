@@ -50,6 +50,18 @@ Mica still lacks native decision metadata in its downloaded GGUF. It has not bee
 
 Native fit: `decide()` serves the same one-question noul shape as this harness (state + question, P(true)), with raw logits for unsaturated true−false margins and a stored calibration temperature — the ingredients the judge threshold work uses. Runtime mismatch: the checkpoint does not reproduce under default causal inference (noncausal full-attention layers; readout at `<|fim_suffix|>` markers, protocol `joint-chunked-readout-v1`), so the Intern-style GGUF adapter path does not transfer. It requires the bundled `pplx_decider` Transformers source (Python 3.12+, CUDA).
 
+## Flagged candidates (2026-11-17, judge-bench v2 leaderboard)
+
+Sourced from the official [safeagents-judge-bench v2 leaderboard](https://huggingface.co/datasets/harness-hub/safeagents-judge-bench) (661 rows, 125 allow). Selection filter: permissive license, <=10B params. Not evaluated; nothing downloaded.
+
+- `Cloudflare/clef-flash` — Apache-2.0, 9.41B, no GGUF in-repo. Leaderboard balanced accuracy 0.89. Transformers-source runtime required unless a GGUF appears; same-size sibling of FastBrain-9B below.
+- `TypeScript/FastBrain-9B` — Apache-2.0, 9.41B, ships 5 GGUF files. Scores 0.81 vs clef-flash's 0.89 at the identical parameter count — consistent with a community GGUF republish of clef-flash; if so, the gap is quant/eval noise worth measuring directly. First candidate the existing llama-server bench path can try unchanged.
+- `knowledgator/gliclass-v4-edge` — Apache-2.0, 0.44B zero-shot classifier; leaderboard 0.795 balanced accuracy. Different inference shape (classifier, not decision-LM): needs its own adapter, same class as pplx-decider.
+- `fastino/GLiNER2.5-Decide` — Apache-2.0, 0.49B GLiNER variant; leaderboard 0.563. Same classifier-adapter caveat; cheap to trial.
+- `PromptforceAI/niti-gate-vegaml-4b` — tops the leaderboard at 0.905-0.91 but is **CC-BY-NC-4.0** (non-commercial). Acceptable for private local judging only; excluded from any open redistribution. Flagged with that caveat.
+
+Also noted: the whole `vllm-sr/d3` family sits on the leaderboard (d3 0.82 / nano 0.76 / ultra 0.76 / edge 0.75) — free calibration points for where D3 Lite ranks upstream. The v2 dataset (661 rows; v1's 562 remain as the `v1` revision) refreshes our stale 562-row snapshot when a re-baseline is wanted.
+
 ## Limits
 
 - This fixed local question is not the published leaderboard prompt; do not compare scores directly.

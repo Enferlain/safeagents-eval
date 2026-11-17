@@ -6,6 +6,8 @@ All notable changes are recorded here. This project follows the [Keep a Changelo
 
 ### Added
 
+- Flagged judge-bench-v2 leaderboard candidates (record-only, nothing downloaded): clef-flash, FastBrain-9B (GGUF path), gliclass-v4-edge, GLiNER2.5-Decide, niti-gate-vegaml-4b (CC-BY-NC caveat). Noted v2 dataset refresh path (661 rows; v1 preserved as a revision).
+
 - Tier-1 Hermes↔SafeAgents correlation: captures bind to the request whose interval covers them (one request at a time per session), landing on native session/turn identity. Unique same-tool call in the response binds the exact `tool_call_id` (`exact`); batched same-tool calls bind session+turn only (`request`, never guessed); missing/ambiguous evidence stays unassociated. Merged journal findings inherit session attribution (`session_attribution`) while capture-join quality (`identity_status`) stays separate. Fail-closed throughout; verified against the live corpus (gray-zone findings now session-attributed).
 
 - Monitoring stack control: `GET /stack` (liveness + launchability of decision model / judge adapter / managed proxy by port probe) and `POST /stack/start` (fixed launch recipes only, per-component idempotence, no request parameters, no stop endpoint). When everything is down and launchable, the pane's live-status surfaces collapse into a single "Monitoring stack is off." line with a Start monitoring button; stored history, Activity and Replay stay available. Start failures are action-local; partial or unlaunchable states keep the detailed view. Backend routes activate on gateway restart; JS hot-loads.
