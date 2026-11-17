@@ -99,7 +99,7 @@ def model_catalog():
 
 
 class SecurityService:
-    def __init__(self, repo_root=None, hermes_home=None):
+    def __init__(self, repo_root=None, hermes_home=None, stack_components=None):
         self.repo_root = Path(repo_root or Path.home() / 'Projects/safeagents-eval').absolute()
         self.hermes_home = Path(hermes_home or os.environ.get('HERMES_HOME') or Path.home() / '.hermes').absolute()
         self.store_path = self.repo_root / 'trial/private-observation'
@@ -111,6 +111,84 @@ class SecurityService:
         self._job_lock_file = None
         self._job = {'state': 'idle', 'started_at': None, 'finished_at': None,
                      'exit_code': None, 'model': None, 'detail': 'No replay started by this service.'}
+        self._stack_lock = threading.Lock()
+        self.stack_components = stack_components if stack_components is not None else self._default_stack()
+
+    def _default_stack(self):
+        """Fixed launch recipes; no caller-supplied commands ever reach these paths."""
+        repo = self.repo_root
+        venv_python = repo / '.venv-trial/bin/python'
+        logs = repo / 'trial/logs'
+        return [
+            {'id': 'model', 'label': 'Decision model', 'port': 18872,
+             'argv': ['/mnt/d/textgen/2026/llama-b12236-bin-win-cuda-13.5-x64/llama-server.exe',
+                      '-m', 'D:/textgen/models/decision/vllm-d3-lite-Q8_0.gguf',
+                      '--host', '127.0.0.1', '--port', '18872', '-c', '8192', '-np', '1',
+                      '-ngl', 'all', '--device', 'CUDA0', '--split-mode', 'none', '-fa', 'on',
+                      '-b', '8192', '-ub', '8192', '--fit', 'off', '--no-webui', '--no-agent',
+                      '--offline', '--alias', 'decision-bench'],
+             'env': {}, 'log': logs / 'llama-18872.log'},
+            {'id': 'judge', 'label': 'Judge adapter', 'port': 18873,
+             'argv': [str(venv_python), str(repo / 'trial/judge_adapter.py'), '18873', '--model', 'lite'],
+             'env': {}, 'log': logs / 'judge-18873.log'},
+            {'id': 'proxy', 'label': 'SafeAgents proxy', 'port': 8788,
+             'argv': [str(venv_python), '-m', 'safeagents.cli', 'start', 'https://api.z.ai', '8788',
+                      '--log-only', '--judge-url', 'http://127.0.0.1:18873',
+                      '--journal', 'trial/journal.jsonl'],
+             'env': {'SSL_CERT_FILE': '/etc/ssl/certs/ca-certificates.crt'}, 'log': None},
+        ]
+
+    @staticmethod
+    def _port_up(port):
+        probe = socket.socket()
+        probe.settimeout(0.3)
+        try:
+            return probe.connect_ex(('127.0.0.1', port)) == 0
+        finally:
+            probe.close()
+
+    def stack_status(self):
+        components = [{'id': c['id'], 'label': c['label'], 'up': self._port_up(c['port'])}
+                      for c in self.stack_components]
+        launchable = all(Path(c['argv'][0]).is_file() for c in self.stack_components)
+        live = [c for c in components if c['up']]
+        state = 'running' if len(live) == len(components) else ('partial' if live else 'off')
+        return {'state': state, 'launchable': launchable, 'components': components}
+
+    def start_stack(self):
+        with self._stack_lock:
+            actions = []
+            for component in self.stack_components:
+                if self._port_up(component['port']):
+                    actions.append({'id': component['id'], 'action': 'already_running'})
+                    continue
+                argv0 = Path(component['argv'][0])
+                if not argv0.is_file():
+                    actions.append({'id': component['id'], 'action': 'unavailable'})
+                    continue
+                try:
+                    env = dict(os.environ)
+                    env.update(component.get('env') or {})
+                    log_file = None
+                    if component.get('log') is not None:
+                        component['log'].parent.mkdir(parents=True, exist_ok=True)
+                        log_file = open(component['log'], 'ab')
+                    try:
+                        subprocess.Popen(component['argv'], cwd=self.repo_root, stdin=subprocess.DEVNULL,
+                                         stdout=log_file if log_file is not None else subprocess.DEVNULL,
+                                         stderr=subprocess.STDOUT, shell=False,
+                                         close_fds=True, start_new_session=True, env=env)
+                    finally:
+                        if log_file is not None:
+                            log_file.close()
+                    actions.append({'id': component['id'], 'action': 'launched'})
+                except OSError:
+                    actions.append({'id': component['id'], 'action': 'unavailable'})
+            if not any(a['action'] in ('launched', 'already_running') for a in actions):
+                raise SecurityError(503, 'Monitoring stack components are not launchable from here.')
+            detail = ('Components starting; the model takes a few seconds to load. '
+                      'Status updates as each port comes up.')
+            return {'state': 'starting', 'components': actions, 'detail': detail}
 
     @staticmethod
     def _safe_path(path):

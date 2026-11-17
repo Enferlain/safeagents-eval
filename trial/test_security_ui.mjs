@@ -1545,3 +1545,89 @@ test('review label buttons form an equal-width centered row', () => {
     assert.notEqual(button.props.style.border, '1px solid transparent', `button ${i} has a visible outline so it reads as a button`);
   }
 });
+
+const stackComponents = (up = [false, false, false]) => [
+  { id: 'model', label: 'Decision model', up: up[0] },
+  { id: 'judge', label: 'Judge adapter', up: up[1] },
+  { id: 'proxy', label: 'SafeAgents proxy', up: up[2] },
+];
+const offlineStatus = () => ({ observed_at: new Date().toISOString(), observation: { state: 'unknown' }, counts: {}, components: [
+  { id: 'proxy_glm', healthy: false, detail: 'connection refused' },
+  { id: 'proxy_local', healthy: false, detail: 'connection refused' },
+  { id: 'decision', healthy: false, detail: 'connection refused' },
+  { id: 'capture', healthy: false, detail: 'connection refused' },
+] });
+
+test('fully-off launchable stack collapses live-status noise into one line and a Start button', () => {
+  const h = harness();
+  h.data.stack = { state: 'off', launchable: true, components: stackComponents() };
+  h.data.status = offlineStatus();
+  h.c.plugin.register(h.ctx); h.open();
+  const text = visibleText(h.draw());
+  assert.match(text, /Monitoring stack is off/);
+  const button = h.nodes(h.draw()).find(n => n.type === 'Button' && n.props.children === 'Start monitoring');
+  assert.ok(button, 'Start button present');
+  assert.doesNotMatch(text, /Route unconfirmed/, 'no component wall in the off state');
+  assert.doesNotMatch(text, /No verified managed SafeAgents run/, 'no Guard quiet text in the off state');
+  assert.doesNotMatch(text, /needs review/, 'no review totals in the off state');
+  const selector = h.nodes(h.draw()).find(n => n.type === 'select' && n.props['aria-label'] === 'Replay model');
+  assert.ok(selector, 'Replay controls stay available with the stack off');
+});
+
+test('off but not launchable keeps the detailed unavailable rendering and no button', () => {
+  const h = harness();
+  h.data.stack = { state: 'off', launchable: false, components: stackComponents() };
+  h.data.status = offlineStatus();
+  h.c.plugin.register(h.ctx); h.open();
+  const text = visibleText(h.draw());
+  assert.doesNotMatch(text, /Monitoring stack is off/);
+  assert.equal(h.nodes(h.draw()).some(n => n.type === 'Button' && n.props.children === 'Start monitoring'), false);
+  assert.match(text, /unavailable/i, 'detailed component states stay visible');
+});
+
+test('Start button posts once, shows starting state, and the pane recovers when the stack reports running', async () => {
+  const h = harness();
+  h.data.stack = { state: 'off', launchable: true, components: stackComponents() };
+  h.data.status = offlineStatus();
+  h.c.plugin.register(h.ctx); h.open();
+  const button = h.nodes(h.draw()).find(n => n.type === 'Button' && n.props.children === 'Start monitoring');
+  await button.props.onClick();
+  const starts = h.calls.filter(call => call.path === '/stack/start');
+  assert.equal(starts.length, 1, 'one start action');
+  assert.equal(starts[0].options?.method, 'POST');
+  let text = visibleText(h.draw());
+  assert.match(text, /Starting monitoring/);
+  assert.equal(h.nodes(h.draw()).find(n => n.type === 'Button' && n.props.children === 'Start monitoring')?.props.disabled, true);
+  h.data.stack = { state: 'running', launchable: true, components: stackComponents([true, true, true]) };
+  h.data.status = { observed_at: new Date().toISOString(), observation: { state: 'unknown' }, counts: {}, components: [] };
+  text = visibleText(h.draw());
+  assert.doesNotMatch(text, /Monitoring stack is off/, 'off block disappears once running');
+  assert.match(text, /Status/, 'normal status layout returns');
+});
+
+test('Start failure surfaces a local error and re-enables the button without changing other sections', async () => {
+  const h = harness();
+  h.data.stack = { state: 'off', launchable: true, components: stackComponents() };
+  h.data.status = offlineStatus();
+  h.c.plugin.register(h.ctx); h.open();
+  const original = h.ctx.rest.bind(h.ctx);
+  h.ctx.rest = async (path, options) => {
+    if (path === '/stack/start') throw new Error('refused');
+    return original(path, options);
+  };
+  const button = h.nodes(h.draw()).find(n => n.type === 'Button' && n.props.children === 'Start monitoring');
+  await button.props.onClick();
+  const text = visibleText(h.draw());
+  assert.match(text, /Could not start the monitoring stack/);
+  assert.notEqual(h.nodes(h.draw()).find(n => n.type === 'Button' && n.props.children === 'Start monitoring')?.props.disabled, true);
+});
+
+test('partial stack state keeps the full status layout', () => {
+  const h = harness();
+  h.data.stack = { state: 'partial', launchable: true, components: stackComponents([true, false, false]) };
+  h.data.status = offlineStatus();
+  h.c.plugin.register(h.ctx); h.open();
+  const text = visibleText(h.draw());
+  assert.doesNotMatch(text, /Monitoring stack is off/);
+  assert.match(text, /unavailable/i);
+});

@@ -578,5 +578,176 @@ class SecurityTests(unittest.TestCase):
         self.assertFalse(result['components'][0]['healthy'])
 
 
+FIXTURE_SERVER = """import socket, sys, time
+server = socket.socket()
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(('127.0.0.1', int(sys.argv[1])))
+server.listen(8)
+with open(sys.argv[2], 'w') as handle:
+    handle.write(str(__import__('os').getpid()))
+    handle.flush()
+while True:
+    try:
+        connection, _ = server.accept()
+        connection.close()
+    except OSError:
+        time.sleep(0.5)
+"""
+
+
+class StackControlTests(unittest.TestCase):
+    """Harmless fixed-script fixtures on ephemeral ports; never the real stack."""
+
+    def setUp(self):
+        import socket
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Path(self.temp.name) / 'repo'
+        self.home = Path(self.temp.name) / 'hermes'
+        self.repo.mkdir(parents=True)
+        self.home.mkdir()
+        self.script = Path(self.temp.name) / 'fixture-server.py'
+        self.script.write_text(FIXTURE_SERVER)
+        self.pids = []
+        self.addCleanup(self._kill_fixtures)
+        self.ports = []
+        for _ in range(3):
+            probe = socket.socket()
+            probe.bind(('127.0.0.1', 0))
+            self.ports.append(probe.getsockname()[1])
+            probe.close()
+        self.mod = load('security_test_stack', ROOT / 'security-plugin/service.py')
+        self.service = self.mod.SecurityService(
+            repo_root=self.repo, hermes_home=self.home,
+            stack_components=self._components())
+
+    def _components(self):
+        import sys
+        return [
+            {'id': 'model', 'label': 'Decision model', 'port': self.ports[0],
+             'argv': [sys.executable, str(self.script), str(self.ports[0]), str(self._pidfile(0))]},
+            {'id': 'judge', 'label': 'Judge adapter', 'port': self.ports[1],
+             'argv': [sys.executable, str(self.script), str(self.ports[1]), str(self._pidfile(1))]},
+            {'id': 'proxy', 'label': 'SafeAgents proxy', 'port': self.ports[2],
+             'argv': [sys.executable, str(self.script), str(self.ports[2]), str(self._pidfile(2))]},
+        ]
+
+    def _pidfile(self, index):
+        return Path(self.temp.name) / f'fixture-{index}.pid'
+
+    def _kill_fixtures(self):
+        import signal
+        for pidfile in map(self._pidfile, range(3)):
+            try:
+                pid = int(pidfile.read_text())
+            except (OSError, ValueError):
+                continue
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+            try:
+                os.waitpid(pid, 0)
+            except OSError:
+                pass
+
+    def _wait_running(self, deadline=15.):
+        import time
+        deadline = time.time() + deadline
+        while time.time() < deadline:
+            if self.service.stack_status()['state'] == 'running':
+                return True
+            time.sleep(0.2)
+        return False
+
+    def test_off_state_reports_launchable(self):
+        result = self.service.stack_status()
+        self.assertEqual(result['state'], 'off')
+        self.assertTrue(result['launchable'])
+        self.assertEqual([c['up'] for c in result['components']], [False, False, False])
+        self.assertNotIn('argv', json.dumps(result))
+
+    def test_start_launches_and_reaches_running(self):
+        result = self.service.start_stack()
+        self.assertEqual([c['action'] for c in result['components']],
+                         ['launched', 'launched', 'launched'])
+        self.assertTrue(self._wait_running())
+
+    def test_start_is_idempotent_for_live_components(self):
+        self.service.start_stack()
+        self.assertTrue(self._wait_running())
+        result = self.service.start_stack()
+        self.assertEqual([c['action'] for c in result['components']],
+                         ['already_running'] * 3)
+        self.assertTrue(self._wait_running())
+
+    def test_partial_state_launches_only_down_components(self):
+        import signal, subprocess, sys
+        up = subprocess.Popen([sys.executable, str(self.script), str(self.ports[0]), str(self._pidfile(0))])
+        try:
+            self.assertTrue(self._wait_port(self.ports[0]))
+            result = self.service.stack_status()
+            self.assertEqual(result['state'], 'partial')
+            started = self.service.start_stack()
+            actions = {c['id']: c['action'] for c in started['components']}
+            self.assertEqual(actions['model'], 'already_running')
+            self.assertEqual(actions['judge'], 'launched')
+            self.assertEqual(actions['proxy'], 'launched')
+            self.assertTrue(self._wait_running())
+        finally:
+            up.send_signal(signal.SIGTERM)
+            up.wait(timeout=10)
+
+    def _wait_port(self, port, deadline=10.):
+        import socket, time
+        deadline = time.time() + deadline
+        while time.time() < deadline:
+            probe = socket.socket()
+            probe.settimeout(0.2)
+            if probe.connect_ex(('127.0.0.1', port)) == 0:
+                probe.close()
+                return True
+            probe.close()
+            time.sleep(0.1)
+        return False
+
+    def test_missing_executable_is_not_launchable(self):
+        components = self._components()
+        missing = str(Path(self.temp.name) / 'missing-binary')
+        for component in components:
+            component['argv'][0] = missing
+        self.service.stack_components = components
+        result = self.service.stack_status()
+        self.assertEqual(result['state'], 'off')
+        self.assertFalse(result['launchable'])
+        with self.assertRaises(Exception) as caught:
+            self.service.start_stack()
+        self.assertEqual(caught.exception.status, 503)
+
+    def test_api_stack_endpoints(self):
+        client = self.client()
+        first = client.get('/stack')
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()['state'], 'off')
+        started = client.post('/stack/start')
+        self.assertEqual(started.status_code, 202)
+        self.assertEqual([c['action'] for c in started.json()['components']],
+                         ['launched'] * 3)
+        self.assertTrue(self._wait_running())
+        again = client.post('/stack/start')
+        self.assertEqual(again.status_code, 202)
+        self.assertEqual([c['action'] for c in again.json()['components']],
+                         ['already_running'] * 3)
+
+    def client(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        api = load('security_test_api_stack', ROOT / 'security-plugin/dashboard/plugin_api.py')
+        api.service = self.service
+        app = FastAPI()
+        app.include_router(api.router)
+        return TestClient(app)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -44,6 +44,12 @@ Windows Python 3.12.10, llama-cpp-python 0.3.36 CUDA 13.2 wheel; bundled llama.c
 
 Mica still lacks native decision metadata in its downloaded GGUF. It has not been forced through chat generation or assigned a guessed template. Original files are unchanged.
 
+## Flagged candidate (2026-11-13)
+
+`pplx-decider-flash-v1.3` is Perplexity's 4B decider: Qwen3.5-4B backbone, 5B params BF16 (about 8.5 GiB), distilled from the 27B [`pplx-decider-v1.3`](https://huggingface.co/perplexity-ai/pplx-decider-v1.3). Apache-2.0. Public and ungated on Hugging Face despite the model card's "repository is private" line. Not evaluated; nothing downloaded.
+
+Native fit: `decide()` serves the same one-question noul shape as this harness (state + question, P(true)), with raw logits for unsaturated true−false margins and a stored calibration temperature — the ingredients the judge threshold work uses. Runtime mismatch: the checkpoint does not reproduce under default causal inference (noncausal full-attention layers; readout at `<|fim_suffix|>` markers, protocol `joint-chunked-readout-v1`), so the Intern-style GGUF adapter path does not transfer. It requires the bundled `pplx_decider` Transformers source (Python 3.12+, CUDA).
+
 ## Limits
 
 - This fixed local question is not the published leaderboard prompt; do not compare scores directly.

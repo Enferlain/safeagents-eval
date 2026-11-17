@@ -136,3 +136,14 @@ Use harmless disposable side effects in an isolated fake HOME, never live danger
 - Observation or audit failures: show configured failure policy and independently track execution outcome, including unknown.
 
 A successful hold test is a release qualification, not a permanent green flag: runtime health, route capability and test version must still match. Ordinary work stays low-friction; no blanket ask-before-every-write policy.
+
+## Monitoring stack control (2026-11-17)
+
+The backend exposes two stack-level endpoints beside the review APIs:
+
+- `GET /stack` — liveness of the three manual components (decision model 18872, judge adapter 18873, managed proxy 8788) by loopback port probe, plus a `launchable` flag (every fixed launch command's executable exists). No store access; pure socket probes.
+- `POST /stack/start` — launches only the down components using fixed launch recipes baked into `service.py` (llama-server exe via WSL interop, `.venv-trial` judge adapter, managed `safeagents start` with `SSL_CERT_FILE` set; logs to `trial/logs/`, proxy stdout discarded in favor of its own `~/.safeagents/run/<id>.log`). No request parameters exist; caller input never reaches a command line. Per-component responses are `launched` / `already_running` / `unavailable`; if nothing could be attempted the call fails 503. There is no stop endpoint — stopping stays a manual/owner action.
+
+Pane behavior: when `/stack` reports every component down AND launchable, the live-status surfaces (status card, health rows, Diagnostics, Guard/Judge sections, Needs review, audit counts) collapse into one "Monitoring stack is off." line with a **Start monitoring** button; stored history, Activity and Replay remain available (replay owns its own temporary model on 18874 and does not need the live stack). Clicking posts once, shows a starting note, and the normal layout returns as the `/stack` poll sees ports open. Start failures are action-local and re-enable the button. Partial states keep the full detailed layout. Fail-closed: a missing/invalid `/stack` response renders the previous detailed view, never the button.
+
+Activation notes: the JS hot-loads, but the `/stack` routes exist only after the hosting Python backend restarts; until then the pane keeps the detailed offline view. Rebooting Windows still takes the manual stack down by design (llama-swap rule); this surface only makes the relaunch a click.

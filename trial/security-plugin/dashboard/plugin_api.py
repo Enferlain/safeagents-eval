@@ -79,6 +79,16 @@ async def replay(request: Request):
     return call('start_replay', model=data['model'])
 
 
+@router.get('/stack')
+def stack_status():
+    return call('stack_status')
+
+
+@router.post('/stack/start', status_code=202)
+def start_stack():
+    return call('start_stack')
+
+
 @router.get('/status')
 def status(session_id: str | None = None):
     return call('status', session_id=session_id)

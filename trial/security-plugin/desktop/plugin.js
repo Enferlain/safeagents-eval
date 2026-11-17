@@ -98,6 +98,9 @@ function resourceValid(resource, value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   if (resource === 'events') return Array.isArray(value.events) && value.events.every(e => e && typeof e === 'object' && typeof e.id === 'string');
   if (resource === 'status') return !!value.observation && typeof value.observation.state === 'string' && (!value.components || Array.isArray(value.components));
+  if (resource === 'stack') return typeof value.state === 'string' && typeof value.launchable === 'boolean'
+    && Array.isArray(value.components) && value.components.every(component => component && typeof component.id === 'string'
+      && typeof component.label === 'string' && typeof component.up === 'boolean');
   if (resource === 'replay') return typeof value.state === 'string' && typeof value.available === 'boolean'
     && Array.isArray(value.models) && value.models.length > 0
     && value.models.every(model => model && ['lite', 'qev'].includes(model.id) && typeof model.label === 'string' && model.label.trim())
@@ -301,6 +304,8 @@ function SecurityPanel({ ctx, scope, status }) {
   const [replayError, setReplayError] = useState('');
   const [replayModel, setReplayModel] = useState('');
   const [startingReplay, setStartingReplay] = useState(null);
+  const [stackBusy, setStackBusy] = useState(false);
+  const [stackError, setStackError] = useState('');
   // Liveness heartbeat: re-render every few seconds while the pane is mounted
   // and its JS is alive. If the pane ever freezes (dead poller, caught render
   // error), the "Pane refresh" age in Diagnostics stops counting up and the
@@ -322,6 +327,13 @@ function SecurityPanel({ ctx, scope, status }) {
   const params = new URLSearchParams({ session_id: session || '', all_sessions: String(allSessions), include_probes: String(includeProbes), limit: '50' });
   const events = useResource(ctx, scope, 'events', `/events?${params}`, [allSessions, includeProbes]);
   const replay = useResource(ctx, scope, 'replay', '/replay');
+  const stack = useResource(ctx, scope, 'stack', '/stack');
+  // Launching the observation stack is a fixed backend action; the pane only
+  // triggers it when the backend reports every component down AND launchable.
+  const stackOff = !stack.error && stack.data?.state === 'off' && stack.data?.launchable === true;
+  useEffect(() => {
+    if (stack.data?.state && stack.data.state !== 'off') { setStackBusy(false); setStackError(''); }
+  }, [stack.data?.state]);
   const latest = useRef(null);
   latest.current = { status, events, replay, replayModel };
   function ready(kind, event) {
@@ -357,6 +369,20 @@ function SecurityPanel({ ctx, scope, status }) {
   }
   function actionCurrent(epoch) {
     return alive.current && sameScope(scope) && actionEpoch.current === epoch;
+  }
+  async function startStack() {
+    if (stackBusy || !stackOff || !allowedScope(scope)) return;
+    const epoch = actionEpoch.current;
+    setStackError(''); setStackBusy(true);
+    let failed = false;
+    try {
+      await ctx.rest('/stack/start', { method: 'POST' });
+      // Success keeps the starting state; the /stack poll clears it once a port opens.
+    } catch (error) {
+      failed = true;
+      if (actionCurrent(epoch)) setStackError(error?.message ? `Could not start the monitoring stack: ${error.message}` : 'Could not start the monitoring stack.');
+    }
+    if (failed || !actionCurrent(epoch)) setStackBusy(false);
   }
   async function label(event, value) {
     if (busyAction.current !== null || !ready('review', event)) return;
@@ -522,15 +548,23 @@ function SecurityPanel({ ctx, scope, status }) {
       jsx('span', { 'aria-label': 'Current session identifier', title: session || 'No focused stored session', style: { fontSize: 11, overflowWrap: 'anywhere' }, children: session ? (session.length > 12 ? `${session.slice(0, 12)}…` : session) : 'None selected' }),
     ] }),
     jsx('h3', { style: heading, children: 'Status' }),
-    jsxs('div', { 'aria-label': 'Status overview', style: { border: '1px solid var(--ui-stroke-secondary)', borderRadius: 7, padding: '3px 9px', background: 'color-mix(in srgb, var(--ui-text-primary) 2%, transparent)' }, children: [
+    stackOff ? jsxs('div', { 'aria-label': 'Monitoring stack off', style: { border: '1px solid var(--ui-stroke-secondary)', borderRadius: 7, padding: '3px 9px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, background: 'color-mix(in srgb, var(--ui-text-primary) 2%, transparent)' }, children: [
+      jsxs('div', { style: { minWidth: 0 }, children: [
+        jsx('div', { children: 'Monitoring stack is off.' }),
+        jsx('div', { style: { ...muted, fontSize: 11 }, children: 'Local observation of model traffic is not running; stored history and Replay stay available.' }),
+      ] }),
+      jsx(Button, { variant: 'ghost', size: 'sm', 'aria-label': 'Start monitoring', style: compactButton, disabled: stackBusy || !allowedScope(scope), onClick: startStack, children: 'Start monitoring' }),
+    ] }) : jsxs('div', { 'aria-label': 'Status overview', style: { border: '1px solid var(--ui-stroke-secondary)', borderRadius: 7, padding: '3px 9px', background: 'color-mix(in srgb, var(--ui-text-primary) 2%, transparent)' }, children: [
       statusLine('Observation', view.label, 'eye'),
       statusLine('Enforcement', view.enforcement, 'shield'),
       statusLine('Live judge', judgeLabel, 'pulse', 'Live judge'),
     ] }),
-    jsx('p', { style: { ...muted, fontSize: 10, margin: '7px 0' }, children: 'Observation only · Hermes handles approvals.' }),
+    stackOff ? null : jsx('p', { style: { ...muted, fontSize: 10, margin: '7px 0' }, children: 'Observation only · Hermes handles approvals.' }),
     scopeReason(scope) ? jsx('p', { children: scopeReason(scope) }) : null,
     status.error ? jsx('div', { role: 'alert', children: `Coverage request failed: ${status.error.message || status.error}` }) : null,
-    jsx('div', { 'aria-label': 'Health summary', style: { fontSize: 11, marginTop: 8 }, children: healthGroups(components, status.data?.observation, status.error, view.stale).map(group => {
+    stackOff && stackBusy ? jsx('div', { 'aria-live': 'polite', style: muted, children: 'Starting monitoring… components appear as each port opens.' }) : null,
+    stackError ? jsx('div', { role: 'alert', children: stackError }) : null,
+    stackOff ? null : jsx('div', { 'aria-label': 'Health summary', style: { fontSize: 11, marginTop: 8 }, children: healthGroups(components, status.data?.observation, status.error, view.stale).map(group => {
       const healthy = group.components.filter(component => componentState(component, status.error, view.stale) === 'Healthy').length;
       const names = { proxy_glm: 'GLM proxy', proxy_local: 'Local proxy', decision: 'Decision model', capture: 'Capture adapter', store: 'Private captures', recorder: 'Recorder', activity: 'Activity records', review: 'Review records', replay: 'Replay records' };
       return jsxs('div', { 'aria-label': group.label, style: { padding: '7px 0', borderTop: '1px solid var(--ui-stroke-secondary)' }, children: [
@@ -547,7 +581,7 @@ function SecurityPanel({ ctx, scope, status }) {
         }),
       ] }, group.label);
     }) }),
-    jsxs('details', { children: [jsx('summary', { style: summary, children: 'Diagnostics' }),
+    ...(stackOff ? [] : [jsxs('details', { children: [jsx('summary', { style: summary, children: 'Diagnostics' }),
       jsx('div', { style: muted, children: status.data?.observation?.detail || '' }),
       jsx('div', { style: muted, children: `Last-recorded provider: ${status.data?.observation?.provider || 'Unknown'}` }),
       jsx('div', { style: muted, children: `Last checked: ${view.checked}${view.stale ? ' · stale / unavailable' : ''}` }),
@@ -557,9 +591,9 @@ function SecurityPanel({ ctx, scope, status }) {
       Number.isFinite(status.data?.judge?.threshold) ? jsx('div', { style: muted, children: `Live judge threshold: ${status.data.judge.threshold} · provisional` }) : null,
       ...components.map(component => jsx('div', { style: muted, children: `${component.label}: ${componentState(component, status.error, view.stale)}${status.error || view.stale ? ` · Last recorded: ${componentState(component, null, false)}` : ''} · ${component.detail || 'No diagnostics recorded'}` }, component.id)),
       jsx('p', { style: muted, children: 'This panel adds no permission system.' }),
-    ] }),
-    ...monitoringSections(status.data, statusUnavailable),
-    jsxs('div', { 'aria-label': 'Needs review', style: block, children: [
+    ] })]),
+    ...(stackOff ? [] : monitoringSections(status.data, statusUnavailable)),
+    stackOff ? null : jsxs('div', { 'aria-label': 'Needs review', style: block, children: [
       jsx('h3', { style: heading, children: 'Needs review' }),
       jsx('div', { style: { ...stateValue, marginBottom: 4 }, children: `${attention?.healthy === true && status.data?.subsystems?.review?.healthy !== false && Number.isInteger(attention.needs_review) && attention.needs_review >= 0 ? attention.needs_review : 'Unknown'} needs review` }),
       jsx('div', { style: { ...muted, fontSize: 11 }, children: `${attention?.scope === 'current_managed_run' ? 'Current managed run' : attention?.scope === 'stored_history' ? 'Stored history' : 'Scope unknown'} · Unassociated with Hermes sessions · not current-session findings` }),
@@ -576,7 +610,7 @@ function SecurityPanel({ ctx, scope, status }) {
 
     events.error ? jsx('div', { role: 'alert', children: `Activity request failed: ${events.error.message || events.error}` }) : !events.data ? jsx('p', { children: 'Loading activity…' }) : !rows.length ? jsx('p', { children: !allSessions && !session ? 'Select a session or choose All sessions.' : 'No activity in this scope.' }) : null,
     ...rows.map(renderRow),
-    jsxs('div', { 'aria-label': 'Evaluation & audit', style: block, children: [
+    stackOff ? null : jsxs('div', { 'aria-label': 'Evaluation & audit', style: block, children: [
       jsx('h3', { style: heading, children: 'Evaluation & audit' }),
       jsx('div', { style: { ...muted, fontSize: 11 }, children: 'Stored history · not current-run Guard traffic' }),
       countGrid([['Judge captures', statusUnavailable ? null : status.data?.counts?.traffic_captures], ['Verification', statusUnavailable ? null : status.data?.counts?.verification_captures], ['Replay', statusUnavailable ? null : status.data?.counts?.replay_attempts], ['Reviews', statusUnavailable ? null : Object.hasOwn(status.data?.counts || {}, 'reviewed_events') ? status.data.counts.reviewed_events : status.data?.counts?.label_events]], 'Capture counts'),

@@ -6,9 +6,12 @@ All notable changes are recorded here. This project follows the [Keep a Changelo
 
 ### Added
 
+- Monitoring stack control: `GET /stack` (liveness + launchability of decision model / judge adapter / managed proxy by port probe) and `POST /stack/start` (fixed launch recipes only, per-component idempotence, no request parameters, no stop endpoint). When everything is down and launchable, the pane's live-status surfaces collapse into a single "Monitoring stack is off." line with a Start monitoring button; stored history, Activity and Replay stay available. Start failures are action-local; partial or unlaunchable states keep the detailed view. Backend routes activate on gateway restart; JS hot-loads.
+
 - Pane liveness diagnostics: a heartbeat re-render keeps a "Pane refresh: Ns ago · status data Ns old" line in Diagnostics, so a frozen pane (dead poller or caught render error) becomes visible instead of silently unclickable. Timer-less sandboxed contexts degrade gracefully. Instrumentation for the unresolved 2026-11-12 click-deadness.
 - Activity rows now show their detail text at the first Details level; only raw IDs and per-event scores stay nested under Technical identity (fixes Details-disclosure rows that contained nothing but the nested toggle).
 - Regression: review buttons must re-enable and accept label writes after a transient status/subsystem outage clears.
+- `REPORT.md`: flagged-candidate entry for Perplexity's `pplx-decider-flash-v1.3` (Qwen3.5-4B decider distilled from a 27B sibling) — native one-question noul fit for the judge bench, plus the constraint that it needs the bundled noncausal `pplx_decider` Transformers source rather than a GGUF adapter path.
 
 - `gemini_run.py`: gemini-decision-1 (Google Decisions API, `noul`) backend for the frozen SafeAgents judge bench — state serialized with the exact System One `js` macro, identical frozen question, per-row predictions/usage/latency, quota-aware pacing and a repair path for rate-limit errors. First result (562/562 valid after repairing 23 quota errors): AUROC 0.983, Brier 0.030, recall 96.7% / false-block 20.5% at the naive 0.5 cutoff. Cross-suite follow-ups (xaab/ and page/ `gemini_run.py`, same frozen payloads): XAAB AUROC 0.989 with 95.6% recall @ 0.5 at zero false positives; PAGE AUROC 0.994 with 95.0% adversarial blocked @ 0.5 and 2.7% benign false-flags. Local comparison on identical inputs: Lite 0.944 / 0.911 / 0.755.
 - `sweep_gemini.py`: offline threshold sweep and matched-FPR comparison over saved predictions; no model calls.
