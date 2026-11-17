@@ -62,6 +62,8 @@ Sourced from the official [safeagents-judge-bench v2 leaderboard](https://huggin
 
 Also noted: the whole `vllm-sr/d3` family sits on the leaderboard (d3 0.82 / nano 0.76 / ultra 0.76 / edge 0.75) — free calibration points for where D3 Lite ranks upstream. The v2 dataset (661 rows; v1's 562 remain as the `v1` revision) refreshes our stale 562-row snapshot when a re-baseline is wanted.
 
+- `harness-hub/safeagents-dotenv-plugin` — a SafeAgents scanner plugin (dotenv/credential-access detection) shipped as an HF model repo, loadable via the upstream `--plugin` HF-Hub path our monitor already verifies. Trial would be a proxy-launch flag change, not code. **License not declared (checked 2026-11-17).** Not loaded; not evaluated.
+
 ## Limits
 
 - This fixed local question is not the published leaderboard prompt; do not compare scores directly.
