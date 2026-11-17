@@ -1631,3 +1631,22 @@ test('partial stack state keeps the full status layout', () => {
   assert.doesNotMatch(text, /Monitoring stack is off/);
   assert.match(text, /unavailable/i);
 });
+
+test('attention rows awaiting review get a colored outline; labeled and conflicted rows are distinct', () => {
+  const h = harness(); h.c.plugin.register(h.ctx);
+  h.data.status.monitoring = monitoringFixture();
+  h.data.status.attention = { healthy: true, scope: 'stored_history', needs_review: 2, events: [
+    attentionEvent({ id: 'journal:pending', review_id: 'journal:pending', journal_id: 'journal:pending', call_id: 'call-p', human_label: null, time: 1794355203 }),
+    attentionEvent({ id: 'journal:labeled', review_id: 'journal:labeled', journal_id: 'journal:labeled', call_id: 'call-l', human_label: 'authorized', time: 1794355204 }),
+    attentionEvent({ id: 'journal:conflict', review_id: 'journal:conflict', journal_id: 'journal:conflict', call_id: 'call-c', human_label: 'authorized', review_conflict: true, time: 1794355205 }),
+  ] };
+  const section = h.nodes(h.draw()).find(n => n.props['aria-label'] === 'Needs review');
+  const byBorder = outline => h.nodes(section).filter(n => n.type === 'article'
+    && String(n.props.style?.border || '').includes(outline));
+  const yellow = byBorder('var(--ui-yellow)');
+  assert.equal(yellow.length, 2, 'pending and conflicting rows carry the yellow outline');
+  const articles = h.nodes(section).filter(n => n.type === 'article');
+  assert.equal(articles.length, 3, 'three attention rows rendered');
+  assert.equal(articles.filter(n => !String(n.props.style?.border || '').includes('var(--ui-yellow)')).length, 1, 'only the labeled row keeps the plain border');
+  assert.doesNotMatch(visibleText(section), /awaiting review/i, 'no extra text was added');
+});

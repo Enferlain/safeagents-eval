@@ -465,7 +465,13 @@ function SecurityPanel({ ctx, scope, status }) {
     const flattenIdentity = !row.attention && !row.scores.length
       && row.events.every(event => event.reviewable === false && event.inspectable !== true
         && !eventErrors[event.id]);
-    return jsx('article', { style: block, children: [
+    // Awaiting-review attention rows are marked by outline only, no extra text:
+    // yellow matches the pane's existing warn color; labeled rows stay plain.
+    const awaitingReview = row.attention && row.events.some(event => event.reviewable === true
+      && (event.human_label == null || event.review_conflict === true));
+    return jsx('article', { style: awaitingReview
+      ? { ...block, border: '1px solid var(--ui-yellow)', borderRadius: 7, padding: '10px 12px' }
+      : block, children: [
       jsxs('div', { style: { ...flow, justifyContent: 'space-between' }, children: [
         jsx('strong', { style: { minWidth: 0, overflowWrap: 'anywhere', fontWeight: 600 }, children: title }),
         jsx('span', { style: { ...muted, fontSize: 10 }, children: displayTime(primary.time) }),
