@@ -579,6 +579,9 @@ class SecurityTests(unittest.TestCase):
 
 
 FIXTURE_SERVER = """import socket, sys, time
+delay = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
+if delay:
+    time.sleep(delay)
 server = socket.socket()
 server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 server.bind(('127.0.0.1', int(sys.argv[1])))
@@ -723,6 +726,20 @@ class StackControlTests(unittest.TestCase):
         with self.assertRaises(Exception) as caught:
             self.service.start_stack()
         self.assertEqual(caught.exception.status, 503)
+
+    def test_start_waits_for_slow_model_before_launching_dependents(self):
+        import sys, time
+        components = self._components()
+        components[0]['argv'] = [sys.executable, str(self.script), str(self.ports[0]), str(self._pidfile(0)), '2']
+        components[0]['wait_port'] = True
+        self.service.stack_components = components
+        started = time.time()
+        result = self.service.start_stack()
+        elapsed = time.time() - started
+        self.assertEqual([c['action'] for c in result['components']],
+                         ['launched', 'launched', 'launched'])
+        self.assertGreaterEqual(elapsed, 1.5, 'start blocks until the model port answers before dependents launch')
+        self.assertTrue(self._wait_running())
 
     def test_api_stack_endpoints(self):
         client = self.client()

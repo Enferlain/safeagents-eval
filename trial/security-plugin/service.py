@@ -127,7 +127,7 @@ class SecurityService:
                       '-ngl', 'all', '--device', 'CUDA0', '--split-mode', 'none', '-fa', 'on',
                       '-b', '8192', '-ub', '8192', '--fit', 'off', '--no-webui', '--no-agent',
                       '--offline', '--alias', 'decision-bench'],
-             'env': {}, 'log': logs / 'llama-18872.log'},
+             'env': {}, 'log': logs / 'llama-18872.log', 'wait_port': True},
             {'id': 'judge', 'label': 'Judge adapter', 'port': 18873,
              'argv': [str(venv_python), str(repo / 'trial/judge_adapter.py'), '18873', '--model', 'lite'],
              'env': {}, 'log': logs / 'judge-18873.log'},
@@ -181,6 +181,13 @@ class SecurityService:
                     finally:
                         if log_file is not None:
                             log_file.close()
+                    # The judge adapter verifies decision-model identity at
+                    # startup and exits if /props is not answering yet; the
+                    # model must be listening before dependents launch.
+                    if component.get('wait_port'):
+                        deadline = time.time() + 90
+                        while time.time() < deadline and not self._port_up(component['port']):
+                            time.sleep(1)
                     actions.append({'id': component['id'], 'action': 'launched'})
                 except OSError:
                     actions.append({'id': component['id'], 'action': 'unavailable'})
