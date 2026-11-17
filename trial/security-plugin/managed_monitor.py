@@ -158,19 +158,21 @@ JUDGE_KEYS = ("consulted", "allow", "block", "errors", "last_consultation", "las
 CALL = re.compile(r"^(\d{2}:\d{2}:\d{2})  (#[1-9]\d*|) *  (PASS|WARN|FLAG|BLOCK) {2,}([A-Za-z_][\w./:-]*)(?: {2,}(.*))?$")
 VERDICTS = {"PASS": "passed", "WARN": "suspicious", "FLAG": "flagged", "BLOCK": "blocked"}
 SUPPORTED_SOURCE = {
-    "__init__.py": "bb02746542d773cea5a3706dfa7307ec5e993fb3ff22b6f2f013e709863f9347",
-    "cli.py": "1702dbf2aa5cc0f689104ffa6d3d501795b1093073ff20c5cf3748b07a66052e",
-    "constants.py": "74cc83781fbbc7fb3ccbddd18a208faa6191e3290179a487c85d875fba880338",
-    "guard.py": "d460da9e905f13582d53cca53d22684b07bd0a72e89e58eb687aa1cb4aa01eb1",
+    "__init__.py": "8e2ac20cf55e0d96e77e7261fccec0b8f44f3af8c99b1fa668835f0c9a614b35",
+    "cli.py": "524827ad2ccd17d49d0d92824b76dbec5f201263cf4dce9da706b5f2ea75ff7b",
+    "constants.py": "0e3c49dd5ca56dde583ced5a8ea3a870bd335edf8244780ca18e390d4ab5a067",
+    "guard.py": "77f8ac91314dc72b68bb9998cac7b306c580eab2c967fb74e7b86c683ccc59a6",
     "journal.py": "f7719ab2d02a046dd54efc186bbe0c5fde1571e20c260f61ffb56bd5cc63c065",
     "judge.py": "93ccd27849378c9eaeca3850ed32af7566db99611b1a2b35069d9b7d753bdbd9",
     "monitor.py": "7ec347c31a809834959b836824ebe924ce063f2017051903e3f9c68a7dcce2e6",
-    "policy.py": "a1e906ee544f9b61f769c6b645e67541510259af1388e4e867d0e01af7b511cb",
-    "proxy.py": "ade5b869ffad0d0cd33b70de1117cc2ab829071448bd507b83347c937389b94b",
+    "policy.py": "312db3ca7c8008ca18214d7e86f8c5eb72a887ade4577ef25409f3b66481db7a",
+    "proxy.py": "8eb614dfe7324dce43b6a452ef88c5f6c1eea93865c8258514f8cc4df33feed6",
     "rewrite.py": "a77b9ad60a17acb0c146e5dc3e322f5835aa79af01fdc004159f66415f05de33",
     "runs.py": "265ab004fcdaac1a73f88de2ceedb91e04541061e85c02a97f00ba4e07f0058b",
-    "scan.py": "587b45a4fbbccdaf6ccfcae837d0fee6246a34aba3a93cc05ccbe910c4ed5eb3",
+    "scan.py": "bbb8be421df1fa7f973b18018889660cb149135f03767300c4b9a0e5eabb1c69",
     "scrub.py": "5eabb38719335b02f634fdb7851b85f0c4ab41a97197bab4a4f83468f301de88",
+    "selfprotect.py": "f02d006a260447af7e1b87d1efb08c33e35189fa642c16a70903fd3b255dc9cd",
+    "sinks.py": "669af04199c350e04cb3f5cbc3395aa23d0a64c6544f083933aa612931975e18",
     "utils.py": "9de94d82fa98ad95569ed6397b3332d74892c45ff691ee66a3546d1f9da94b70",
 }
 

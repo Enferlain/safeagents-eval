@@ -4,7 +4,9 @@ All notable changes are recorded here. This project follows the [Keep a Changelo
 
 ## [Unreleased]
 
-### Added
+### Changed
+
+- Upgraded the trial install to upstream `dcf38e0` (sinks, self-protection, atif-scan off the event loop, OpenCode 2.x): both venvs reinstalled from the refreshed upstream clone (copy install, not editable — the provenance check needs the physical site-packages dir), SUPPORTED_SOURCE manifest extended to the 16-file set with recomputed hashes, proxy restarted and the managed run re-verified live on the new package with zero runtime errors. Sinks remain opt-in (no `--sink` passed yet); self-protection is now active in the guard.
 
 - Flagged judge-bench-v2 leaderboard candidates (record-only, nothing downloaded): clef-flash, FastBrain-9B (GGUF path), gliclass-v4-edge, GLiNER2.5-Decide, niti-gate-vegaml-4b (CC-BY-NC caveat). Noted v2 dataset refresh path (661 rows; v1 preserved as a revision).
 
