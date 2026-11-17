@@ -514,11 +514,67 @@ class SecurityService:
                                 'detail': 'Available.' if healthy else 'Capture records unavailable or invalid.'}] + health,
                 'subsystems': subsystems, 'counts': counts, 'pending': []}
 
+    def _correlator(self):
+        """Tier-1 capture attribution: request-interval binding onto native identity.
+
+        A capture is taken while a response streams; Hermes dispatches its tool
+        calls only after that response completes. Binding the capture to the
+        request whose interval covers it (Hermes sends one request at a time per
+        session) lands on that request's native events, which carry the full
+        session/turn/tool-call/api-request chain. Within one request, several
+        same-tool calls can share a response batch: session and turn are still
+        unambiguous, the exact tool call is not — reported as 'request', never
+        guessed. Zero or conflicting evidence leaves the capture unassociated.
+        """
+        try:
+            routes = sorted((r for r in (self._read('security-routes.jsonl') or [])
+                             if r.get('origin') == 'native_hook'
+                             and isinstance(r.get('api_request_id'), str)
+                             and number(r.get('time')) is not None),
+                            key=lambda r: r['time'])
+            native_events = [e for e in (self._read('security-events.jsonl') or [])
+                             if isinstance(e.get('tool'), str)
+                             and number(e.get('time')) is not None]
+        except (OSError, ValueError, UnicodeError, SecurityError):
+            routes, native_events = [], []
+
+        def correlate(capture):
+            state = (capture.get('payload') or {}).get('state') or {}
+            tool, moment = state.get('tool'), number(capture.get('time'))
+            if not isinstance(tool, str) or moment is None or not routes:
+                return None
+            prior = [r for r in routes if r['time'] <= moment + 0.5]
+            if not prior:
+                return None
+            candidates = [e for e in native_events
+                          if e.get('api_request_id') == prior[-1]['api_request_id']
+                          and e.get('tool') == tool
+                          and moment - 2 <= e['time'] <= moment + 60]
+            if not candidates:
+                # Some native events carry no api linkage; a tight dispatch
+                # window is the only remaining evidence — unique match only.
+                candidates = [e for e in native_events
+                              if e.get('tool') == tool
+                              and moment - 2 <= e['time'] <= moment + 30]
+            if not candidates:
+                return None
+            sessions = {e.get('session_id') for e in candidates}
+            turns = {e.get('turn_id') for e in candidates}
+            if len(sessions) != 1 or len(turns) != 1 or None in sessions | turns:
+                return None
+            exact = len(candidates) == 1
+            return {'session_id': sessions.pop(), 'turn_id': turns.pop(),
+                    'tool_call_id': candidates[0].get('tool_call_id') if exact else None,
+                    'identity_status': 'exact' if exact else 'request'}
+
+        return correlate
+
     def _event_rows(self, records=None, subsystems=None):
         if records is None:
             records, subsystems = self._snapshot()
         if records['calls'] is None:
             raise SecurityError(503, {'healthy': False, 'subsystems': subsystems})
+        correlate = self._correlator()
         labels = {r['id']: r['label'] for r in (records['labels'] or [])}
         replays = {}
         for row in records['replays'] or []:
@@ -545,7 +601,12 @@ class SecurityService:
             comparisons = list(replays.get((cid, row.get('input_sha256'), row.get('policy_sha256')), {}).values())
             live = score_metadata(row, 'live')
             scores = [live] + [score_metadata(replayed, 'replay') for replayed in comparisons]
-            events.append({'id': cid, 'time': stamp, 'session_id': None, 'turn_id': None, 'tool_call_id': None,
+            native = correlate(row)
+            events.append({'id': cid, 'time': stamp,
+                           'session_id': native['session_id'] if native else None,
+                           'turn_id': native['turn_id'] if native else None,
+                           'tool_call_id': native['tool_call_id'] if native else None,
+                           'identity_status': native['identity_status'] if native else None,
                            'origin': 'verification' if row.get('origin') == 'verification' else 'traffic',
                            'source': 'safeagents', 'status': 'error' if any(item['error'] for item in scores) else 'observed',
                            'execution': 'not_intercepted', 'tool': None,
@@ -659,6 +720,12 @@ class SecurityService:
             if capture and len(references[capture['id']]) == 1 and capture_counts[capture['id']] == 1:
                 consumed.add(capture['id'])
                 event.update(scores=capture['scores'], inspectable=capture['inspectable'])
+                # Proven capture correlation carries session attribution onto the
+                # merged finding; join quality (identity_status) stays separate.
+                if capture.get('session_id'):
+                    event.update(session_id=capture['session_id'], turn_id=capture['turn_id'],
+                                 tool_call_id=capture.get('tool_call_id'),
+                                 session_attribution=capture.get('identity_status'))
             elif capture:
                 event.update(identity_status='conflict', inspectable=False, reviewable=False,
                              review_aliases=[event['id']])

@@ -768,3 +768,107 @@ class StackControlTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CorrelationTests(unittest.TestCase):
+    """Tier-1 session attribution: capture -> request interval -> native identity."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Path(self.temp.name) / 'repo'
+        self.home = Path(self.temp.name) / 'hermes'
+        self.store = self.repo / 'trial/private-observation'
+        self.store.mkdir(parents=True, mode=0o700)
+        self.home.mkdir()
+        self.mod = load('security_test_correlation', ROOT / 'security-plugin/service.py')
+        self.service = self.mod.SecurityService(repo_root=self.repo, hermes_home=self.home)
+
+    def write(self, name, rows):
+        path = self.store / name
+        path.write_text(''.join(json.dumps(r) + '\n' for r in rows))
+        path.chmod(0o600)
+
+    def capture(self, **extra):
+        return {'id': '3a31cd31-98fc-4324-94d2-e573796ee37e', 'time': 1000., 'origin': 'traffic',
+                'payload': {'state': {'task': 'T', 'tool': 'terminal', 'arguments': '{}'}},
+                'score': .9, 'threshold': .88, 'would_block': True, 'error': None,
+                'model': {}, 'input_sha256': 'a', 'policy_sha256': 'b', **extra}
+
+    def route(self, time, api='s:t:r:api:1'):
+        return {'schema': 1, 'time': time, 'session_id': 's', 'turn_id': 's:t:r',
+                'api_request_id': api, 'provider': 'safeagents-glm', 'route': 'safeagents-glm',
+                'origin': 'native_hook'}
+
+    def event(self, time, api='s:t:r:api:1', tool='terminal', call='call_1'):
+        import uuid
+        return {'schema': 1, 'id': str(uuid.uuid5(uuid.NAMESPACE_DNS, call)), 'time': time, 'session_id': 's', 'turn_id': 's:t:r',
+                'tool_call_id': call, 'api_request_id': api, 'source': 'hermes', 'origin': 'traffic',
+                'tool': tool, 'status': 'proposed', 'execution': 'proposed', 'reviewable': False}
+
+    def result(self):
+        rows = self.service.events(all_sessions=True, include_probes=True)['events']
+        return next(r for r in rows if r['id'].startswith('3a31cd31'))
+
+    def test_exact_single_call_in_response(self):
+        self.write('calls.jsonl', [self.capture()])
+        self.write('security-routes.jsonl', [self.route(995.), self.route(1010., api='s:t:r:api:2')])
+        self.write('security-events.jsonl', [self.event(1002.)])
+        row = self.result()
+        self.assertEqual(row['session_id'], 's')
+        self.assertEqual(row['turn_id'], 's:t:r')
+        self.assertEqual(row['tool_call_id'], 'call_1')
+        self.assertEqual(row['identity_status'], 'exact')
+
+    def test_batched_same_tool_binds_session_and_turn_not_call(self):
+        self.write('calls.jsonl', [self.capture()])
+        self.write('security-routes.jsonl', [self.route(995.)])
+        self.write('security-events.jsonl', [self.event(1002., call='call_a'), self.event(1003., call='call_b')])
+        row = self.result()
+        self.assertEqual(row['session_id'], 's')
+        self.assertEqual(row['turn_id'], 's:t:r')
+        self.assertIsNone(row['tool_call_id'])
+        self.assertEqual(row['identity_status'], 'request')
+
+    def test_events_without_api_id_resolve_by_window_fallback(self):
+        event = self.event(1002.)
+        event.pop('api_request_id')
+        self.write('calls.jsonl', [self.capture()])
+        self.write('security-routes.jsonl', [self.route(995.)])
+        self.write('security-events.jsonl', [event])
+        row = self.result()
+        self.assertEqual(row['session_id'], 's')
+        self.assertEqual(row['tool_call_id'], 'call_1')
+        self.assertEqual(row['identity_status'], 'exact')
+
+    def test_ambiguous_fallback_stays_unassociated(self):
+        first = self.event(1002., call='call_a'); first.pop('api_request_id')
+        second = self.event(1004., call='call_b', api='other:api'); second.pop('api_request_id')
+        second['turn_id'] = 's:t:z'
+        self.write('calls.jsonl', [self.capture()])
+        self.write('security-routes.jsonl', [self.route(995.)])
+        self.write('security-events.jsonl', [first, second])
+        row = self.result()
+        self.assertIsNone(row['session_id'])
+        self.assertIsNone(row['identity_status'])
+
+    def test_merged_journal_finding_inherits_session_attribution(self):
+        capture = self.capture()
+        journal = {'id': 18, 'time': 1000.5, 'verdict': 'suspicious', 'tool': 'terminal',
+                   'judge': 'allow:0.54 observation_id=' + capture['id'], 'signals': []}
+        self.write('calls.jsonl', [capture])
+        (self.repo / 'trial').mkdir(exist_ok=True)
+        (self.repo / 'trial/journal.jsonl').write_text(json.dumps(journal) + '\n')
+        self.write('security-routes.jsonl', [self.route(995.)])
+        self.write('security-events.jsonl', [self.event(1002.)])
+        row = next(r for r in self.service.events(all_sessions=True, include_probes=True)['events']
+                   if r['id'].startswith('journal:'))
+        self.assertEqual(row['session_id'], 's')
+        self.assertEqual(row['session_attribution'], 'exact')
+        self.assertEqual(row['identity_status'], 'matched')
+
+    def test_no_route_evidence_stays_unassociated(self):
+        self.write('calls.jsonl', [self.capture()])
+        self.write('security-events.jsonl', [self.event(1002.)])
+        row = self.result()
+        self.assertIsNone(row['session_id'])
