@@ -587,7 +587,7 @@ function SecurityPanel({ ctx, scope, status }) {
         }),
       ] }, group.label);
     }) }),
-    ...(stackOff ? [] : [jsxs('details', { children: [jsx('summary', { style: summary, children: 'Diagnostics' }),
+    ...(stackOff ? [] : [jsxs('details', { style: { userSelect: 'text', WebkitUserSelect: 'text' }, children: [jsx('summary', { style: summary, children: 'Diagnostics' }),
       jsx('div', { style: muted, children: status.data?.observation?.detail || '' }),
       jsx('div', { style: muted, children: `Last-recorded provider: ${status.data?.observation?.provider || 'Unknown'}` }),
       jsx('div', { style: muted, children: `Last checked: ${view.checked}${view.stale ? ' · stale / unavailable' : ''}` }),

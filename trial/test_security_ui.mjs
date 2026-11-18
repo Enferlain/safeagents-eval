@@ -1650,3 +1650,11 @@ test('attention rows awaiting review get a colored outline; labeled and conflict
   assert.equal(articles.filter(n => !String(n.props.style?.border || '').includes('var(--ui-yellow)')).length, 1, 'only the labeled row keeps the plain border');
   assert.doesNotMatch(visibleText(section), /awaiting review/i, 'no extra text was added');
 });
+
+test('diagnostics text is selectable for copying', () => {
+  const h = harness(); h.c.plugin.register(h.ctx); h.open();
+  const details = h.nodes(h.draw()).find(n => n.type === 'details'
+    && h.nodes(n).some(c => c.type === 'summary' && c.props.children === 'Diagnostics'));
+  assert.ok(details, 'Diagnostics section present');
+  assert.equal(details.props.style?.userSelect, 'text', 'diagnostics body selects as text');
+});
