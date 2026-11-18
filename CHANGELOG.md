@@ -4,6 +4,10 @@ All notable changes are recorded here. This project follows the [Keep a Changelo
 
 ## [Unreleased]
 
+### Fixed
+
+- Managed-monitor parser: single-line `[safeagents] upstream error:` notices (new in upstream dcf38e0, emitted on httpx.HTTPError with possibly-empty message) now count as runtime errors with totals intact — previously one such line aborted record parsing entirely, degrading the run with zero totals. Self-protection FLAG rows (reason-only, no signals, no judge) verified to corroborate correctly. Live result after fix: 120 records, 1 runtime error, degraded-with-totals.
+
 ### Changed
 
 - Upgraded the trial install to upstream `dcf38e0` (sinks, self-protection, atif-scan off the event loop, OpenCode 2.x): both venvs reinstalled from the refreshed upstream clone (copy install, not editable — the provenance check needs the physical site-packages dir), SUPPORTED_SOURCE manifest extended to the 16-file set with recomputed hashes, proxy restarted and the managed run re-verified live on the new package with zero runtime errors. Sinks remain opt-in (no `--sink` passed yet); self-protection is now active in the guard.
