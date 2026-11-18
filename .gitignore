@@ -161,3 +161,10 @@ trial/journal.jsonl
 trial/local-journal.jsonl
 trial/logs/
 trial/upstream/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*

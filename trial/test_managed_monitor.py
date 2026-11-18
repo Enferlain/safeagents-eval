@@ -163,6 +163,26 @@ class ManagedMonitorTests(unittest.TestCase):
         self.addCleanup(fixture.close)
         return fixture
 
+    def test_upstream_error_notice_counts_as_runtime_error_and_keeps_totals(self):
+        f = self.fixture()
+        reason = "self-protection: touches the safeagents state directory or journal"
+        line = f.journal_call("flagged", 2, reason=reason, signals=[], judge=None)
+        notice = "[safeagents] upstream error: \n"
+        f.log.write_text(f.banner + f.call(what="SECRET_FAKE_ARGUMENT") + notice + line)
+        result = load_monitor().ManagedMonitor(f.run, f.proc).snapshot("safeagents-glm")
+        self.assertEqual(result["state"], "degraded")
+        self.assertEqual(result["runtime_errors"], 1)
+        self.assertEqual(result["guard"], {"reviewed": 2, "passed": 1, "warn": 0, "flagged": 1, "blocked": 0})
+
+    def test_self_protection_flag_corroborates_without_signals(self):
+        f = self.fixture()
+        reason = "self-protection: touches the safeagents state directory or journal"
+        line = f.journal_call("flagged", 2, reason=reason, signals=[], judge=None)
+        f.log.write_text(f.banner + f.call(what="SECRET_FAKE_ARGUMENT") + line)
+        result = load_monitor().ManagedMonitor(f.run, f.proc).snapshot("safeagents-glm")
+        self.assertEqual(result["state"], "verified")
+        self.assertEqual(result["guard"], {"reviewed": 2, "passed": 1, "warn": 0, "flagged": 1, "blocked": 0})
+
     def test_verified_pass_has_run_scoped_totals_and_no_raw_content(self):
         f = self.fixture()
         f.log.write_text(f.banner + f.call(what="SECRET_FAKE_ARGUMENT"))

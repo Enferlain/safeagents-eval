@@ -515,6 +515,14 @@ class ManagedMonitor:
         index = 1
         while index < len(lines):
             line = lines[index]
+            # Upstream transport failures log a single-line uvicorn warning
+            # (proxy.py: logger.warning("[safeagents] upstream error: %s", e));
+            # the message may be empty. Same contract as ERROR/Traceback blocks:
+            # count, never render, stay degraded with totals intact.
+            if line.startswith("[safeagents] upstream error: "):
+                runtime_errors += 1
+                index += 1
+                continue
             m = CALL.fullmatch(line)
             if m is None:
                 # uvicorn logs ASGI failures as an ERROR header plus a Traceback
