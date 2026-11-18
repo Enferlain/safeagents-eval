@@ -3,6 +3,7 @@ import asyncio
 import json
 import socket
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -131,3 +132,29 @@ class AdapterTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ProvenanceRetryTests(unittest.TestCase):
+    def test_startup_probe_retries_then_succeeds(self):
+        calls = {'n': 0}
+        real = adapter.model_info
+        def flaky(url):
+            calls['n'] += 1
+            if calls['n'] < 3:
+                raise ConnectionError('backend still starting')
+            return real(url)
+        with patch.object(adapter, 'PROBE_RETRY_SECONDS', 10.0), \
+             patch.object(adapter, 'model_info', flaky):
+            provenance = adapter.selected_provenance('lite')
+        self.assertEqual(calls['n'], 3)
+        self.assertEqual(adapter.model_identity(provenance)['id'], 'lite')
+
+    def test_startup_probe_gives_up_after_bounded_window(self):
+        def dead(url):
+            raise ConnectionError('never ready')
+        started = time.monotonic()
+        with patch.object(adapter, 'PROBE_RETRY_SECONDS', 1.0), \
+             patch.object(adapter, 'model_info', dead):
+            with self.assertRaises(ConnectionError):
+                adapter.selected_provenance('lite')
+        self.assertGreaterEqual(time.monotonic() - started, 1.0)

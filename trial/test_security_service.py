@@ -741,6 +741,30 @@ class StackControlTests(unittest.TestCase):
         self.assertGreaterEqual(elapsed, 1.5, 'start blocks until the model port answers before dependents launch')
         self.assertTrue(self._wait_running())
 
+    def test_model_timeout_skips_dependents(self):
+        import sys, time
+        components = self._components()
+        components[0]['argv'] = [sys.executable, str(self.script), str(self.ports[0]), str(self._pidfile(0)), '30']
+        components[0]['wait_port'] = True
+        components[0]['wait_deadline'] = 1
+        components[1]['requires'] = 'model'
+        self.service.stack_components = components
+        result = self.service.start_stack()
+        actions = {c['id']: c['action'] for c in result['components']}
+        self.assertEqual(actions['model'], 'launched')
+        self.assertEqual(actions['judge'], 'unavailable', 'dependent not launched into a dead model')
+        self.assertEqual(actions['proxy'], 'launched')
+        self.assertTrue(self._wait_state('partial', deadline=15))
+
+    def _wait_state(self, state, deadline=15.):
+        import time
+        deadline = time.time() + deadline
+        while time.time() < deadline:
+            if self.service.stack_status()['state'] == state:
+                return True
+            time.sleep(0.2)
+        return False
+
     def test_api_stack_endpoints(self):
         client = self.client()
         first = client.get('/stack')

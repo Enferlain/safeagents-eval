@@ -6,6 +6,8 @@ All notable changes are recorded here. This project follows the [Keep a Changelo
 
 ### Fixed
 
+- Stack-start cold-boot robustness: the decision-model wait deadline is 120s (measured model load is ~2s; the real variable is Windows process start after reboot), dependents declared via `requires` are skipped — not launched blind — when it expires, and the judge adapter retries its identity probe for a bounded 60s window (PROBE_RETRY_SECONDS) instead of dying on the first 503 from a still-starting sibling. Same probe, same verification, retried.
+
 - Managed-monitor parser: single-line `[safeagents] upstream error:` notices (new in upstream dcf38e0, emitted on httpx.HTTPError with possibly-empty message) now count as runtime errors with totals intact — previously one such line aborted record parsing entirely, degrading the run with zero totals. Self-protection FLAG rows (reason-only, no signals, no judge) verified to corroborate correctly. Live result after fix: 120 records, 1 runtime error, degraded-with-totals.
 
 ### Changed

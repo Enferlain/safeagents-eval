@@ -128,7 +128,7 @@ class SecurityService:
                       '-b', '8192', '-ub', '8192', '--fit', 'off', '--no-webui', '--no-agent',
                       '--offline', '--alias', 'decision-bench'],
              'env': {}, 'log': logs / 'llama-18872.log', 'wait_port': True},
-            {'id': 'judge', 'label': 'Judge adapter', 'port': 18873,
+            {'id': 'judge', 'label': 'Judge adapter', 'port': 18873, 'requires': 'model',
              'argv': [str(venv_python), str(repo / 'trial/judge_adapter.py'), '18873', '--model', 'lite'],
              'env': {}, 'log': logs / 'judge-18873.log'},
             {'id': 'proxy', 'label': 'SafeAgents proxy', 'port': 8788,
@@ -158,9 +158,16 @@ class SecurityService:
     def start_stack(self):
         with self._stack_lock:
             actions = []
+            timed_out = set()
             for component in self.stack_components:
                 if self._port_up(component['port']):
                     actions.append({'id': component['id'], 'action': 'already_running'})
+                    continue
+                if component.get('requires') in timed_out:
+                    # A dependency never became ready; launching this component
+                    # would crash it at startup (the judge verifies model
+                    # identity at boot and exits on an unanswered probe).
+                    actions.append({'id': component['id'], 'action': 'unavailable'})
                     continue
                 argv0 = Path(component['argv'][0])
                 if not argv0.is_file():
@@ -182,12 +189,17 @@ class SecurityService:
                         if log_file is not None:
                             log_file.close()
                     # The judge adapter verifies decision-model identity at
-                    # startup and exits if /props is not answering yet; the
-                    # model must be listening before dependents launch.
+                    # startup and exits if /props is not answering yet. Model
+                    # load itself is ~2s; the variable is Windows process
+                    # start after a reboot, so the deadline covers that, and
+                    # on expiry the model is reported unavailable and declared
+                    # dependents are skipped, never launched blind.
                     if component.get('wait_port'):
-                        deadline = time.time() + 90
+                        deadline = time.time() + component.get('wait_deadline', 120)
                         while time.time() < deadline and not self._port_up(component['port']):
                             time.sleep(1)
+                        if not self._port_up(component['port']):
+                            timed_out.add(component['id'])
                     actions.append({'id': component['id'], 'action': 'launched'})
                 except OSError:
                     actions.append({'id': component['id'], 'action': 'unavailable'})
