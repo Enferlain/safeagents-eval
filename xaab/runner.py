@@ -179,7 +179,9 @@ def main():
     manifest,cases=load_cases(root)
     if args.limit:
         cases=cases[:args.limit]
-    policy=read_policy(root.parent/'trial/judge_adapter.py')
+    # The live policy is owned by the plugin repo; the duplicated trial copy is
+    # legacy until the eval cleanup step.
+    policy=read_policy(Path.home()/'Projects/hermes-safeagents/src/hermes_safeagents/judge_adapter.py')
     (out/'policy.txt').write_text(policy+'\n')
     (out/'source-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     assert not (out/'results.jsonl').exists(), 'use a fresh output directory'

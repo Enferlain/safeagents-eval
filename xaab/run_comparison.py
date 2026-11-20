@@ -21,7 +21,9 @@ if __name__ == '__main__':
     baseline = root/'run-001'
     frozen = (baseline/'inputs.jsonl').read_bytes()
     manifest, cases = runner.load_cases(root)
-    policy = runner.read_policy(ROOT/'trial/judge_adapter.py')
+    # The live policy is owned by the plugin repo; the duplicated trial copy is
+    # legacy until the eval cleanup step.
+    policy = runner.read_policy(Path.home()/'Projects/hermes-safeagents/src/hermes_safeagents/judge_adapter.py')
     expected_inputs = [{'id':c['id'], 'payload':runner.payload(c,policy)} for c in cases]
     assert expected_inputs == [json.loads(line) for line in frozen.splitlines()]
     assert len(cases) == 180

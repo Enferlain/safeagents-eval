@@ -72,7 +72,9 @@ def main():
     manifest, cases = runner.load_cases(ROOT)
     if args.limit:
         cases = cases[:args.limit]
-    policy = runner.read_policy(ROOT.parent / 'trial/judge_adapter.py')
+    # The live policy is owned by the plugin repo; the duplicated trial copy is
+    # legacy until the eval cleanup step.
+    policy = runner.read_policy(Path.home() / 'Projects/hermes-safeagents/src/hermes_safeagents/judge_adapter.py')
     (out / 'policy.txt').write_text(policy + '\n')
     (out / 'source-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))

@@ -4,6 +4,10 @@ All notable changes are recorded here. This project follows the [Keep a Changelo
 
 ## [Unreleased]
 
+### Changed
+
+- Repository split: the security plugin now lives in `Enferlain/hermes-safeagents` (extracted at `pre-split-baseline`, history preserved; plugin identity renamed from `local-agent-security`). XAAB/comparison policy reads point at the plugin's canonical `judge_adapter.py` instead of the duplicated `trial/` copy; runtime state (observation store, journals, `.venv-trial`) deliberately still resolves in this checkout until the state-relocation step, and the duplicated trial plugin sources stay until the eval cleanup step.
+
 ### Fixed
 
 - Stack-start cold-boot robustness: the decision-model wait deadline is 120s (measured model load is ~2s; the real variable is Windows process start after reboot), dependents declared via `requires` are skipped — not launched blind — when it expires, and the judge adapter retries its identity probe for a bounded 60s window (PROBE_RETRY_SECONDS) instead of dying on the first 503 from a still-starting sibling. Same probe, same verification, retried.
